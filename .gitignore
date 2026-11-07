@@ -1,0 +1,32 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data retained by the service
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Python tooling and test output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Build/editor/OS files
+build/
+dist/
+*.egg-info/
+.DS_Store
+.idea/
+.vscode/
+
+# Planning documents (kept local only)
+plans/
