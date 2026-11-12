@@ -287,9 +287,11 @@ Initial API version, documented with OpenAPI at `/docs`. Every `/v1/*` endpoint 
 
 1. Normalize the N-number (`400` if invalid). If `D` is in the future, return `400`. If `date` is omitted, use today's date (America/Chicago).
 2. If `D` is within observed coverage, find the `observed` assignment covering `D`. Return it with the `registration_record` and `aircraft_model` versions current at the latest snapshot on or before `D`.
-3. Otherwise fall back to a `dereg_record` assignment covering `D`.
-4. If nothing covers `D`, return `404` with `coverage_start`, `coverage_end`, and whether `D` falls before observed coverage, inside a gap, or in an unassigned period.
-5. If `D` is after the last verified-coverage date, answer from the latest data and add the `stale` flag.
+3. If no observed assignment covers `D` but `D` falls between the last snapshot where an assignment was seen and the first snapshot where it was absent, return that (old) assignment flagged `bracketed_change`, with `last_seen_date` and `first_absent_date`.
+4. If `D` is before observed coverage, return the current registration from its certificate issue date when that assignment was present in the first snapshot (`basis = 'certificate'`, flag `certificate_basis`). The certificate date proves when the registration began but not that nothing changed before the first observation.
+5. Otherwise fall back to a `dereg_record` assignment covering `D`.
+6. If nothing covers `D`, return `404` with `coverage_start`, `coverage_end`, and whether `D` falls before observed coverage, inside a gap, or in an unassigned period.
+7. If `D` is more than the staleness threshold (default 4 days) after the last verified-coverage date, answer from the latest data and add the `stale` flag. One day past it is normal, because the FAA publishes nightly.
 
 Every lookup response contains `observation_date`, `snapshot_id`, `archive_sha256`, `basis`, `data_confidence`, and `data_quality_flags`.
 
@@ -301,9 +303,10 @@ Every lookup response contains `observation_date`, `snapshot_id`, `archive_sha25
 |---|---|
 | `low_identity` | aircraft identity lacks a usable serial number |
 | `gap` | answer or bracketing change spans a coverage gap |
-| `stale` | requested date is beyond the last verified-coverage date |
+| `stale` | requested date is more than the staleness threshold beyond the last verified-coverage date |
 | `dereg_record` | answer comes from DEREG certificate/cancel dates, not daily observation |
-| `bracketed_change` | `D` falls between `last_seen` and `first_absent` snapshots of a change |
+| `bracketed_change` | `D` falls between `last_seen` and `first_absent` snapshots of a change; the old assignment is returned |
+| `certificate_basis` | answer comes from the current registration's certificate issue date, before observed coverage |
 
 `data_confidence` is `high` when there are no flags, `low` when `low_identity` or `gap` is present, and `medium` otherwise.
 
@@ -368,7 +371,7 @@ The console is read-only for registry data. It does not start imports or updates
 ### API keys
 
 - **Issuing:** an admin enters a name, a scope (`query` or `monitor`), an owner/contact, an optional expiry date, an optional per-key rate limit (requests/minute), and an optional note. The full key is shown **once**, with a copy button, and cannot be retrieved afterwards. Rotation means issuing a new key and revoking the old one.
-- **Format:** `wdj_` followed by 32 random bytes in base62 (about 47 characters total). Only the display prefix and a SHA-256 hash of the full key are stored. A fast hash is appropriate because keys are high-entropy random values, not passwords. Comparison is constant-time.
+- **Format:** `wdj_` followed by 32 random bytes in base62 (about 47 characters total). Only the display prefix and a SHA-256 hash of the full key are stored. A fast hash is appropriate because keys are high-entropy random values, not passwords. Keys are looked up by that hash, so lookup timing reveals nothing about stored keys.
 - **Scopes:** each key has one scope. `query` keys (the default) can call every `/v1/*` endpoint. `monitor` keys can call only `GET /v1/status` and receive `403` everywhere else, so a dashboard credential can never read registry or registrant data.
 - **Use:** clients send `Authorization: Bearer <key>`; `X-API-Key: <key>` is also accepted. A missing, unknown, revoked, or expired key gets `401` with one uniform message. A key over its rate limit gets `429` with `Retry-After`.
 - **Verification path:** each API worker caches valid key hashes from `admin.db` in memory and refreshes them every 30 seconds, so a revocation takes effect within 30 seconds without a database read per request. Rate limits are enforced per worker (limit ÷ worker count), which is approximate but needs no shared state.
