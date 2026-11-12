@@ -1,0 +1,12 @@
+[Unit]
+Description=WhoDatJet: daily FAA archive collection
+
+[Timer]
+# FAA refreshes at about 11:30 p.m. Central; the morning run catches late publications.
+OnCalendar=*-*-* 00:15:00 America/Chicago
+OnCalendar=*-*-* 06:15:00 America/Chicago
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

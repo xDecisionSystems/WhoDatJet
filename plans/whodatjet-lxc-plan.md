@@ -40,9 +40,9 @@ This keeps the service lightweight and makes its data directory easy to back up.
 │   │   ├── templates/
 │   │   └── static/
 │   └── cli.py                 # download, import, rebuild, migrate, serve, keys, admin, notify commands
-├── migrations/
-│   ├── registry/              # whodatjet.db (registry data)
-│   └── admin/                 # admin.db (keys, admins, settings, audit)
+│   ├── migrations/            # packaged with the release
+│   │   ├── registry/          # whodatjet.db (registry data)
+│   │   └── admin/             # admin.db (keys, admins, settings, audit)
 ├── tests/
 │   ├── fixtures/              # deliberately small FAA-like data files
 │   ├── test_normalize.py
@@ -102,7 +102,7 @@ Two hashes are recorded for every download:
 - `archive_sha256` — hash of the ZIP bytes, used for integrity verification of the stored file.
 - `content_sha256` — hash of the sorted (member name, member-content hash) list. It is used for de-duplication, because a re-zipped but otherwise identical publication has different ZIP bytes.
 
-Only downloads with new content are retained. They go to the configured archive store (see [Archive storage](#archive-storage)) under the key `daily/<source_date>/<content_sha256>.zip`, or `annual/<year>/<content_sha256>.zip` for annual databases. Every backend uses the same keys.
+Only downloads with new content are retained. They go to the configured archive store (see [Archive storage](#archive-storage)) under the key `daily/<source_date>/<content_sha256>.zip`. Every backend uses the same keys.
 
 History is append-only. The one in-place change allowed is closing an open interval, which sets its end once. Dates labelled **observed** mean "present in FAA downloads verified on these dates", not the legal effective date of a registration change. Dates derived from `DEREG.txt` certificate/cancel fields are labelled with a separate basis.
 
@@ -145,8 +145,7 @@ snapshot (
   id INTEGER PRIMARY KEY,
   source_date DATE NOT NULL,          -- FAA publication date
   source_date_basis TEXT NOT NULL CHECK (source_date_basis IN
-    ('http_last_modified','zip_member_mtime','download_date','archive_label')),
-  snapshot_kind TEXT NOT NULL CHECK (snapshot_kind IN ('daily','annual')),
+    ('http_last_modified','zip_member_mtime','download_date')),
   downloaded_at TEXT NOT NULL,
   archive_store_id INTEGER NOT NULL REFERENCES archive_store(id),
   archive_key TEXT NOT NULL,          -- e.g. daily/2026-11-05/<content_sha256>.zip
@@ -171,15 +170,25 @@ aircraft_model (                       -- versioned ACFTREF rows
 
 aircraft (
   id INTEGER PRIMARY KEY,
-  mfr_code TEXT NOT NULL,             -- first 3 chars of MFR MDL CODE
+  faa_unique_id TEXT UNIQUE,          -- MASTER `UNIQUE ID`; NULL for DEREG-only aircraft; set once
+  mfr_mdl_code TEXT NOT NULL,         -- full 7-character code when first seen
   serial_number_raw TEXT,
-  serial_number_norm TEXT,            -- uppercase, spaces/hyphens/leading zeros policy applied
-  identity_confidence TEXT NOT NULL CHECK (identity_confidence IN ('high','low')),
-  identity_key TEXT NOT NULL UNIQUE,  -- 'H|mfr|serial' or 'L|<source-specific key>'
+  serial_number_norm TEXT,            -- uppercase, spaces and hyphens removed
+  identity_basis TEXT NOT NULL CHECK (identity_basis IN ('unique_id','model_serial','source_row')),
+  identity_key TEXT NOT NULL UNIQUE,  -- 'U|<unique id>', 'S|<code>|<serial>', or 'R|<n-number>|<cert date>|<code>'
   first_seen_snapshot_id INTEGER NOT NULL REFERENCES snapshot(id)
 );
-CREATE UNIQUE INDEX aircraft_high_identity
-  ON aircraft(mfr_code, serial_number_norm) WHERE identity_confidence = 'high';
+CREATE INDEX aircraft_model_serial ON aircraft(mfr_mdl_code, serial_number_norm);
+
+-- Evidence about whether identities behave as assumed (see Identity rules).
+identity_event (
+  id INTEGER PRIMARY KEY,
+  snapshot_id INTEGER NOT NULL REFERENCES snapshot(id),
+  kind TEXT NOT NULL CHECK (kind IN
+    ('unique_id_attributes_changed','model_serial_new_unique_id','ambiguous_dereg_match')),
+  aircraft_id INTEGER REFERENCES aircraft(id),
+  detail_json TEXT NOT NULL
+);
 
 tail_number (
   id INTEGER PRIMARY KEY,
@@ -226,9 +235,15 @@ Indexes: `registration_record(aircraft_id, first_seen_snapshot_id)`, `registrati
 
 ### Identity rules
 
-- **High confidence:** a non-empty normalized serial number that is not a placeholder (e.g., `NONE`, `UNKNOWN`, `0`), combined with the 3-character manufacturer code. Model and series codes are excluded from identity because they can change over an aircraft's life. They are stored on `registration_record`.
-- **Low confidence:** anything else. The identity key is derived from the source row (N-number + certificate issue date + `MFR MDL CODE`). Such rows are never merged with other aircraft automatically, and responses flag them.
-- Serial normalization rules are unit-tested against real edge cases (spaces, hyphens, leading zeros) before the first production import. Identity changes after launch require a rebuild.
+Decided after Phase 0. The original rule (3-character manufacturer prefix + serial) produced 7,833 collisions in a single MASTER snapshot, mostly amateur-built aircraft with serial `1`, and 329 of 559 prefixes map to more than one manufacturer name.
+
+- **MASTER rows: FAA `UNIQUE ID`** (`identity_basis = 'unique_id'`). It is present and distinct on every MASTER row (318,990 of 318,990).
+- **DEREG rows** have no `UNIQUE ID`. Each is linked to an existing aircraft with the same full `MFR MDL CODE` + normalized serial, if exactly one exists. If none exists, a `model_serial` aircraft is created. If several exist, a new aircraft is created and an `ambiguous_dereg_match` event is recorded. Full code + serial had one collision across all of MASTER.
+- **Limitation (Phase 2 finding):** only 82 of 383,756 DEREG rows match a current MASTER aircraft on full code + serial, because the FAA reassigns model/series codes over time. Looser keys collide too often to link automatically: dropping the 2-character series gives 4,574 collisions within MASTER (1,100 even with year of manufacture). Most DEREG history therefore stands as separate `model_serial` aircraft. Tail-number lookups are unaffected, because each DEREG row carries its own serial and model. Cross-N-number airframe history mostly covers time in MASTER. A looser, explicitly flagged "probable link" layer can be added later without changing identities.
+- **Re-registration of a DEREG-only aircraft:** when a new MASTER `UNIQUE ID` has the same full code + serial as exactly one `model_serial` aircraft with no `faa_unique_id`, that aircraft's `faa_unique_id` is set (once) instead of creating a new aircraft.
+- **Placeholder or empty serials** (`0`, `00`, empty, `NONE`, `UNKNOWN`) never match on serial. DEREG rows with one get a `source_row` identity and are flagged `low_identity`.
+- **`UNIQUE ID` stability is not yet proven** (one snapshot cannot show it). The importer records evidence in `identity_event`: a `UNIQUE ID` whose code + serial changes (`unique_id_attributes_changed`), and a code + serial that reappears under a new `UNIQUE ID` after the old one disappears (`model_serial_new_unique_id`). If events show `UNIQUE ID` is not stable, identity rules change and the database is rebuilt from archives.
+- Serial normalization (uppercase, spaces and hyphens removed; leading zeros kept, since stripping them would merge 1,149 keys) is unit-tested against the Phase 0 fixtures. Identity changes after launch require a rebuild.
 
 ### N-number normalization
 
@@ -252,7 +267,7 @@ Uppercase the input, remove spaces and hyphens, strip a leading `N`, and validat
 - **Expected publication days** are U.S. federal working days, computed with the `holidays` package.
 - **Verified-coverage dates** are the source dates of runs that ended `imported` or `duplicate`.
 - A **gap** is a span between consecutive verified-coverage dates that contains more than a configurable number of missed expected publication days (default: 2). Changes detected across a gap are reported with `gap` confidence. Weekends and holidays are never gaps.
-- Annual snapshots count as verified-coverage dates, so the spans between them (and between the last annual snapshot and the first daily one) are gaps. An interval crossing one is kept open across it but carries the `gap` flag. The change bracket can be up to a year wide.
+- Observed coverage starts at the first daily import. Dates before it are answered only from `dereg_record` intervals (see [Daily ingestion](#daily-ingestion)).
 - Data is **stale** when the most recent verified-coverage date is older than a configurable threshold (default: 4 calendar days).
 
 ## API
@@ -308,7 +323,7 @@ This is a research database. The API serves every record exactly as the FAA orig
 
 ### Concurrency and performance
 
-The API serves many simultaneous users. The only writer to the registry database (`whodatjet.db`) is the importer (daily runs, the one-time annual backfill, and `rebuild`), and the ingest lock guarantees only one runs at a time. Users never write registry data. Admin-console changes and API-key usage counters go to the separate `admin.db` (see [Admin console](#admin-console)), so they never contend with an import. This matches SQLite in WAL mode: any number of readers in parallel, one writer, and readers and the writer never block each other.
+The API serves many simultaneous users. The only writer to the registry database (`whodatjet.db`) is the importer (daily runs and `rebuild`), and the ingest lock guarantees only one runs at a time. Users never write registry data. Admin-console changes and API-key usage counters go to the separate `admin.db` (see [Admin console](#admin-console)), so they never contend with an import. This matches SQLite in WAL mode: any number of readers in parallel, one writer, and readers and the writer never block each other.
 
 - **Snapshot isolation:** an import is one transaction. Queries running during it see the previous committed state, and the next query after the commit sees the complete new snapshot. Users never see a partially imported day.
 - **Connections:** each Uvicorn worker process opens its own connections, one per thread, never shared across threads. API connections are read-only (`file:whodatjet.db?mode=ro` URI plus `PRAGMA query_only=ON`).
@@ -477,17 +492,15 @@ The response is computed from both databases (read-only) and the data volume's f
 
 - `whodatjet-ingest.timer` uses `OnCalendar=*-*-* 00:15:00 America/Chicago` and `*-*-* 06:15:00 America/Chicago`, with `Persistent=true` and `RandomizedDelaySec=10m`. The morning run catches late FAA refreshes. On non-publication days the runs are cheap duplicates.
 - Transient network failures retry with bounded exponential backoff. Exhausted retries record a `failed` run and exit nonzero. `OnFailure=whodatjet-alert@%n.service` runs `whodatjet notify`, which posts to the Slack webhook configured in the admin console (see [Slack notifications](#slack-notifications)).
-- The downloader URL, expected file set, required columns, and HTTP `User-Agent` are configuration. The User-Agent is a descriptive service string with an operator-supplied contact. Verify early (Phase 0) whether the FAA endpoint rejects non-browser clients.
+- The downloader URL, expected file set, required columns, and HTTP `User-Agent` are configuration. The User-Agent is a descriptive service string. Phase 0 confirmed the FAA accepts it, and that its CDN answers `HEAD` with `503`, so the downloader uses `GET` only.
 - Ingestion is idempotent: rerunning a download/import cannot duplicate snapshots, aircraft, records, or intervals.
-- **Backfill:** two historical sources are loaded during initial setup, before daily collection starts:
-  - **FAA annual databases** (linked from the FAA download page; currently understood to cover 2012–2021, confirmed in Phase 0). `whodatjet backfill-annual` downloads each one, retains it in the archive store under `annual/<year>/`, and imports it as an `annual` snapshot in chronological order, using the same reconciliation rules. Its `source_date` comes from the archive's own label or file dates (`archive_label` basis). Older files may use different column names, so header aliases for each era are configuration, and each era gets a trimmed fixture test.
-  - **`DEREG.txt`** from the first daily import, which adds `dereg_record` intervals reaching back before 2012 and fills part of the gap between the last annual database and the start of daily collection.
-- **Chronological order is required.** Archives that predate already-imported snapshots are never applied incrementally. Adding one later (e.g., a newly found historical file) triggers `whodatjet rebuild`, which replays every archive in `source_date` order into a new database and swaps it in atomically.
+- **Historical coverage:** there is no separate backfill. FAA annual databases are not used: Phase 0 found no annual archives on the FAA download page. History before the first daily import comes only from **`DEREG.txt`**, which the first daily import loads as `dereg_record` intervals (certificate issue date to cancel date) reaching back decades. Observed history starts with the first daily download.
+- **Chronological order is required.** Archives that predate already-imported snapshots are never applied incrementally. Adding one later (e.g., a historical file found later) triggers `whodatjet rebuild`, which replays every archive in `source_date` order into a new database and swaps it in atomically.
 - Retain all unique archives by default. Add an explicit retention command only after backup and storage requirements are agreed.
 
 ### Storage estimate
 
-At about 60–70 MB per archive and about 250 publication days per year, unique archives grow by roughly **15–18 GB per year** (verify against live sizes in Phase 0). The annual databases add a one-time few GB (measured in Phase 0). The database adds a small fraction of that, because only changed rows are stored. Recommended initial data volume: **50 GB** when archives stay on it. When archives live on a separate volume or in object storage, 20 GB for databases, staging, and the local archive cache is enough, and the archive location needs the growth above. The installer displays these estimates before confirming.
+At about 60–70 MB per archive and about 250 publication days per year, unique archives grow by roughly **15–18 GB per year** (verify against live sizes in Phase 0). The database adds a small fraction of that, because only changed rows are stored. Recommended initial data volume: **50 GB** when archives stay on it. When archives live on a separate volume or in object storage, 20 GB for databases, staging, and the local archive cache is enough, and the archive location needs the growth above. The installer displays these estimates before confirming.
 
 ### Archive storage
 
@@ -547,7 +560,7 @@ How to read the table:
 - **Concurrent in-flight requests** is how many lookups can be served at the same moment while keeping p95 latency under about 100 ms. Requests beyond the concurrency limit get a fast `503`, and clients should retry. Interactive users are idle most of the time, so the number of *users* supported is far higher than the number of in-flight requests: dozens on `low`, hundreds on `medium` or `high`.
 - **Workers** is about 2 × vCPU. A lookup is mostly CPU work (Python and JSON), with a little waiting on page-cache misses.
 - **Memory** covers about 100 MB per API worker, about 100 MB for the single-worker admin console, the importer's peak, which overlaps API traffic at night, and the remainder as page cache for indexes. Memory beyond that mostly speeds up `history` queries and first-hit latency.
-- The one-time annual backfill and any `rebuild` run on every profile; on `low` they just take longer.
+- `rebuild` runs on every profile; on `low` it just takes longer.
 - These numbers are **pre-implementation estimates**. Phase 8 load testing replaces them with measured values, and the README publishes those.
 
 The installer reads the node's free CPU and memory (`pvesh get /nodes/<node>/status`) and warns if the chosen profile would overcommit the host. `custom` prompts for vCPU and memory, then suggests workers = 2 × vCPU and a concurrency limit. The chosen values are written to `pct` and to `/etc/whodatjet.env` (`UVICORN_WORKERS`, `UVICORN_LIMIT_CONCURRENCY`, `SQLITE_MMAP_SIZE`, `SQLITE_CACHE_SIZE`).
@@ -605,14 +618,14 @@ Automatic application updates are out of scope. FAA data ingestion is automated,
 
 ## Delivery phases
 
-0. **Spike:** download the live FAA archive from the target network. Confirm the URL, User-Agent behavior, file set, headers, encoding, `Last-Modified` behavior, archive size, and serial/N-number edge cases. Inventory the annual databases: years available, URLs, sizes, file layouts and column names per era, and how each is dated. Build the test fixtures from real (trimmed) rows.
+0. **Spike:** download the live FAA archive from the target network. Confirm the URL, User-Agent behavior, file set, headers, encoding, `Last-Modified` behavior, archive size, and serial/N-number edge cases. Build the test fixtures from real (trimmed) rows.
 1. Bootstrap the Python project with `uv`, configuration, migration runner, and SQLite connection policy.
 2. Implement normalization, the schema, the `ArchiveStore` interface with filesystem and S3 backends (S3 unit-tested against `moto`, plus a Garage container in CI), and the fixture-driven importer, including content-hash de-duplication, the run/snapshot split, single-transaction apply, and failed-import recovery.
-3. Implement interval reconciliation and coverage tests: unchanged record, changed attributes, changed N-number, reassignment to a different aircraft, deregistration, re-registration of the same pair (new certificate date), low-confidence identities, DEREG backfill, annual-snapshot import and year-long gaps, refusal of out-of-order archives, missed publication days (gap vs. weekend), failed imports that must not close intervals, and `rebuild` matching the incremental result.
+3. Implement interval reconciliation and coverage tests: unchanged record, changed attributes, changed N-number, reassignment to a different aircraft, deregistration, re-registration of the same pair (new certificate date), low-confidence identities, DEREG-derived intervals, refusal of out-of-order archives, missed publication days (gap vs. weekend), failed imports that must not close intervals, and `rebuild` matching the incremental result.
 4. Implement and test the API: as-of semantics, fallback order, confidence flags, field selection, validation, and API-key authentication (cache refresh, revocation within 30 s, expiry, per-key rate limits, usage flush).
-5. Add the downloader with retries, timer and alert units, structured logs, operational CLI (`download`, `import`, `backfill-annual`, `rebuild`, `backup`, `status`, `keys`, `admin`, `notify`), and import metrics.
+5. Add the downloader with retries, timer and alert units, structured logs, operational CLI (`download`, `import`, `rebuild`, `backup`, `status`, `keys`, `admin`, `notify`), and import metrics.
 6. Build the admin console: `admin.db` and its migrations, login/sessions/CSRF/lockout, dashboard, API-key issue/revoke, admin accounts, audit log, Slack webhook configuration with test message, watchdog timer, and alert de-duplication/resolution. Tests cover authentication and CSRF enforcement, forced password change blocking every other route while the default password is in use, key shown once and stored only as a hash, webhook URL validation, alert repeat suppression, the admin routes being absent from the API port, `monitor` keys getting `403` on every endpoint except `/v1/status`, and the `/v1/status` schema staying stable (a contract test, so Homepage mappings don't break across releases).
-7. Add the interactive Proxmox installer (which runs `backfill-annual` before enabling the daily timer), guest setup, the GitHub Actions release/Sigstore workflow and tag ruleset, the verified updater and rollback flow, and deployment/runbook documentation. The README begins with the one-line Proxmox-host bootstrap command, using a version-pinned release URL rather than a mutable branch:
+7. Add the interactive Proxmox installer, guest setup, the GitHub Actions release/Sigstore workflow and tag ruleset, the verified updater and rollback flow, and deployment/runbook documentation. The README begins with the one-line Proxmox-host bootstrap command, using a version-pinned release URL rather than a mutable branch:
 
    ```sh
    curl -fsSL https://github.com/xDecisionSystems/WhoDatJet/releases/download/vX.Y.Z/install.sh | sudo bash
@@ -632,7 +645,7 @@ Automatic application updates are out of scope. FAA data ingestion is automated,
 - `whodatjet rebuild` from archives produces the same history as incremental imports.
 - API queries keep being served during an import, with no errors and no partially imported results. Each sizing profile meets its published concurrency and p95 latency figures in load testing.
 - The installer offers `low`/`medium`/`high`/`custom` sizing with the capacity guidance above, warns about host overcommit, and `install.sh --resize` changes the profile without a reinstall.
-- Every available FAA annual database is retained and imported as an `annual` snapshot. Lookups for dates in 2012–2021 return annual-snapshot answers flagged `gap`.
+- Lookups for dates before the first daily import are answered from `dereg_record` intervals (flagged `dereg_record`) or return `404` reporting that the date falls before observed coverage.
 - The API, importer, and database survive container restarts and Proxmox backup and restore, because all state is on the backed-up persistent volume.
 - The host installer creates an unprivileged LXC with working Tailscale (TUN passthrough) or LAN exposure, after collecting the rootfs and data storage choices.
 - `sudo whodatjet-update` installs a Sigstore-verified, version-pinned release or rolls back automatically, without losing database or archive data. A manifest not signed by the repository's release workflow is rejected.
@@ -642,14 +655,14 @@ Automatic application updates are out of scope. FAA data ingestion is automated,
 - With a Slack webhook configured, a failed ingest, FAA format change, stale data, unhealthy API, low disk, and update result each produce one Slack message and one "resolved" message, with repeats suppressed in between. Messages contain no secrets or registrant data.
 - Archives can be stored on the data volume, a separate Proxmox volume (including NAS-backed NFS/CIFS storage), cloud S3, or self-hosted S3-compatible storage, with an optional replica. Every archive is verified after it is written. A replica outage never fails an import and is caught up automatically. `rebuild` works from any backend, and `archives migrate` moves between backends without data loss.
 - A Homepage dashboard shows WhoDatJet's health through `siteMonitor` (`/healthz?strict=true`, no key) and a `customapi` status widget (`/v1/status`, `monitor` key). A `monitor` key cannot read registry data.
-- Automated tests cover normalization, importer idempotency, failed-import rollback, interval reconciliation, gap detection, annual-archive import, temporal API queries, API-key authentication, admin-console security, and notification de-duplication.
+- Automated tests cover normalization, importer idempotency, failed-import rollback, interval reconciliation, gap detection, DEREG-derived intervals, temporal API queries, API-key authentication, admin-console security, and notification de-duplication.
 
 ## Settled decisions
 
 - Tailscale runs inside the LXC. Enrollment uses a one-time auth key or interactive `tailscale up`, and no key is committed.
 - The API port defaults to `8000`. In Tailscale mode it is reached through `tailscale serve` (HTTPS on the tailnet).
 - `fields` omitted, empty, or `*` returns all permitted fields, including registrant/address data. Otherwise only the requested allowed fields are returned.
-- Backfill: all FAA annual databases are imported as `annual` snapshots, and DEREG history is ingested as `dereg_record` intervals.
+- No annual-database backfill. History before daily collection comes only from DEREG, ingested as `dereg_record` intervals.
 - Research database: records are served exactly as originally published, with no retroactive redaction.
 - API access requires per-user API keys issued from an admin console on a separate port (`8001` locally; `:8443` via Tailscale). Slack incoming-webhook notifications are configured there. The console starts with `admin`/`admin`, and a password change is required at first login.
 - Archive storage: the installer offers the data volume (default), a separate Proxmox volume (including NAS via Proxmox NFS/CIFS storage), cloud S3, or self-hosted S3-compatible storage, plus an optional replica. The databases always stay on block-style local storage.
@@ -662,4 +675,4 @@ Automatic application updates are out of scope. FAA data ingestion is automated,
 
 ## Decisions needed before implementation
 
-None outstanding. Phase 0 findings (annual-database inventory, archive sizes, FAA client behavior) may surface new ones.
+None outstanding. Phase 0 findings (archive sizes, FAA client behavior) may surface new ones.

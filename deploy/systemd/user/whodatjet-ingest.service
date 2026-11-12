@@ -1,0 +1,14 @@
+# Interim user-level unit for running collection before the LXC deployment exists.
+# Install: deploy/systemd/user/install.sh [ENV_FILE]
+[Unit]
+Description=WhoDatJet: download the FAA registry archive and store it if new
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO_DIR@
+EnvironmentFile=@ENV_FILE@
+ExecStart=@REPO_DIR@/.venv/bin/whodatjet collect
+TimeoutStartSec=2h
+Nice=10
