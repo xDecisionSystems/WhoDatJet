@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from whodatjet import timeline
 from whodatjet.archive_store import ArchiveStore, StoredArchive, sha256_file
 from whodatjet.faa_client import CHICAGO
 from whodatjet.normalize import (
@@ -370,6 +371,7 @@ def import_archive(conn: sqlite3.Connection, zip_path: Path, meta: SnapshotMeta,
             current_uids = {u for r in master if (u := r[R["faa_unique_id"]])}
             ap.records("master", master, lambda rec: ap.master_identity(rec, current_uids))
             ap.records("dereg", dereg, ap.dereg_identity)
+            timeline.reconcile(conn, sid, latest[0] if latest else None, ap.stats)
             conn.execute("INSERT OR IGNORE INTO archive_copy (snapshot_id, archive_store_id, verified_at) "
                          "VALUES (?,?,?)", (sid, store_id, _now()))
             conn.execute(

@@ -14,19 +14,6 @@ from whodatjet.importer import SnapshotMeta, import_archive, import_pending
 MASTER, DEREG = "MASTER.txt", "DEREG.txt"
 
 
-@pytest.fixture
-def conn(tmp_path):
-    c = db.connect_writer(tmp_path / "whodatjet.db")
-    db.migrate(c, db.load_migrations("registry"))
-    return c
-
-
-@pytest.fixture
-def store_id(conn):
-    return int(conn.execute("INSERT INTO archive_store (role, kind, location, created_at) "
-                            "VALUES ('primary','filesystem','/test','now')").lastrowid)
-
-
 counter = iter(range(1, 10_000))
 
 

@@ -6,12 +6,15 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
-from whodatjet import db
+from whodatjet import coverage, db
+from whodatjet import rebuild as rebuild_mod
 from whodatjet.archive_store import open_store
 from whodatjet.collect import LockBusy, collect, ingest_lock
 from whodatjet.config import ConfigError, load_config, load_env_file
+from whodatjet.faa_client import CHICAGO
 from whodatjet.importer import ImportError_, import_pending
 
 
@@ -24,6 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     arch = sub.add_parser("archives", help="inspect the archive store")
     arch.add_argument("action", choices=["list"])
     sub.add_parser("import", help="import archives from the store that are not yet in the registry database")
+    sub.add_parser("rebuild", help="rebuild the registry database by replaying every archive in order")
+    sub.add_parser("coverage", help="show verified coverage, gaps and staleness")
     mig = sub.add_parser("migrate", help="apply pending database migrations")
     mig.add_argument("--database", choices=["registry", "admin", "all"], default="all")
     mig.add_argument("--status", action="store_true", help="show applied/pending migrations without applying")
@@ -84,6 +89,36 @@ def main(argv: list[str] | None = None) -> int:
         if not results:
             print("nothing to import")
         return 0 if all(r.status in ("imported", "duplicate") for r in results) else 1
+
+    if args.command == "rebuild":
+        try:
+            with ingest_lock(cfg.lock_path):
+                results = rebuild_mod.rebuild(cfg.registry_db_path, open_store(cfg), cfg.staging_dir,
+                                              cfg.data_dir / "backups")
+        except LockBusy as exc:
+            print(f"{exc}; try again later", file=sys.stderr)
+            return 75
+        except (ConfigError, ImportError_, RuntimeError) as exc:
+            print(f"rebuild failed (live database unchanged): {exc}", file=sys.stderr)
+            return 1
+        print(f"rebuilt {cfg.registry_db_path} from {len(results)} archive(s); "
+              "restart API workers so they reopen the database")
+        return 0
+
+    if args.command == "coverage":
+        conn = db.connect_reader(cfg.registry_db_path)
+        dates = coverage.coverage_dates(conn)
+        today = datetime.now(CHICAGO).date()
+        latest = dates[-1] if dates else None
+        print(f"coverage: {dates[0] if dates else '-'} .. {latest or '-'} ({len(dates)} date(s))")
+        print(f"stale: {coverage.is_stale(latest, today, cfg.stale_days)} (today {today}, "
+              f"threshold {cfg.stale_days} days)")
+        gaps = coverage.find_gaps(dates, cfg.gap_threshold)
+        for g in gaps:
+            print(f"gap: after {g.after} before {g.before} ({g.missed_publication_days} publication days missed)")
+        if not gaps:
+            print("gaps: none")
+        return 0
 
     if args.command == "migrate":
         targets = ["registry", "admin"] if args.database == "all" else [args.database]

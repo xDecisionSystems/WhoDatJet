@@ -252,7 +252,7 @@ Uppercase the input, remove spaces and hyphens, strip a leading `N`, and validat
 ### Reconciliation rules
 
 1. Download to `staging/`, then validate the ZIP and the required file set. Compute both hashes and determine `source_date`, preferring HTTP `Last-Modified` converted to America/Chicago, then the newest ZIP member mtime, then the download date. Record the basis used.
-2. If `content_sha256` already exists, record an `ingest_run` with status `duplicate` linked to the existing snapshot, delete the staged file, and stop. A duplicate on an expected publication day still counts as a verified-coverage date.
+2. If `content_sha256` already exists, record an `ingest_run` with status `duplicate` linked to the existing snapshot, delete the staged file, and stop. A duplicate adds no coverage date: the FAA has published nothing newer than the existing snapshot.
 3. Otherwise write the ZIP to the primary archive store and verify it: for the filesystem backend, atomic rename plus re-hash; for S3, `PUT` with `x-amz-checksum-sha256`, or a SHA-256 metadata check plus size comparison where the service lacks checksum support. Only then create the `snapshot` row (`pending`) and load MASTER, DEREG, and ACFTREF from the **local staging copy** into temporary staging tables. If the primary store write fails, the run fails and the staging file is kept for the next attempt. Replica copies are made after the import (see [Archive storage](#archive-storage)).
 4. In **one transaction**, apply changes relative to the previous imported snapshot:
    - `aircraft_model`, `registration_record`: insert rows whose `(source_file, row_hash)` is not open; close open versions whose hash is no longer present.
@@ -265,7 +265,7 @@ Uppercase the input, remove spaces and hyphens, strip a leading `N`, and validat
 ### Coverage, gaps, and staleness
 
 - **Expected publication days** are U.S. federal working days, computed with the `holidays` package.
-- **Verified-coverage dates** are the source dates of runs that ended `imported` or `duplicate`.
+- **Verified-coverage dates** are the source dates of imported snapshots. (Duplicates re-confirm an existing snapshot's source date, so they add none.)
 - A **gap** is a span between consecutive verified-coverage dates that contains more than a configurable number of missed expected publication days (default: 2). Changes detected across a gap are reported with `gap` confidence. Weekends and holidays are never gaps.
 - Observed coverage starts at the first daily import. Dates before it are answered only from `dereg_record` intervals (see [Daily ingestion](#daily-ingestion)).
 - Data is **stale** when the most recent verified-coverage date is older than a configurable threshold (default: 4 calendar days).

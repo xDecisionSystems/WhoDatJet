@@ -63,6 +63,8 @@ class Config:
     download_timeout_s: float
     sqlite_mmap_size: int = 0
     sqlite_cache_size_kib: int = 0
+    gap_threshold: int = 2  # missed publication days before a span counts as a gap
+    stale_days: int = 4  # calendar days after the latest coverage date before data is stale
     archive_backend_setting: str | None = None  # "s3" | "filesystem"; default: s3 if configured
     archive_dir_setting: Path | None = None
 
@@ -151,6 +153,8 @@ def load_config() -> Config:
         download_timeout_s=float(_get("WHODATJET_DOWNLOAD_TIMEOUT_S", "600") or 600),
         sqlite_mmap_size=_int("SQLITE_MMAP_SIZE", 0),
         sqlite_cache_size_kib=_int("SQLITE_CACHE_SIZE", 0),
+        gap_threshold=_int("WHODATJET_GAP_THRESHOLD_DAYS", 2),
+        stale_days=_int("WHODATJET_STALE_DAYS", 4),
         archive_backend_setting=_archive_backend(),
         archive_dir_setting=Path(d).resolve() if (d := _get("WHODATJET_ARCHIVE_DIR")) else None,
     )

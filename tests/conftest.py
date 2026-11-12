@@ -8,6 +8,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from whodatjet import db
 from whodatjet.archive_store import S3ArchiveStore
 from whodatjet.config import Config, S3Config
 
@@ -48,3 +49,16 @@ def cfg(tmp_path: Path, s3cfg) -> Config:
     return Config(faa_url="https://faa.test/ReleasableAircraft.zip", user_agent="whodatjet-test",
                   required_files=("MASTER.txt", "ACFTREF.txt", "DEREG.txt"), data_dir=tmp_path / "data",
                   s3=s3cfg, download_attempts=2, download_timeout_s=5)
+
+
+@pytest.fixture
+def conn(tmp_path):
+    c = db.connect_writer(tmp_path / "whodatjet.db")
+    db.migrate(c, db.load_migrations("registry"))
+    return c
+
+
+@pytest.fixture
+def store_id(conn):
+    return int(conn.execute("INSERT INTO archive_store (role, kind, location, created_at) "
+                            "VALUES ('primary','filesystem','/test','now')").lastrowid)
