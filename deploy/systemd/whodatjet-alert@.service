@@ -1,0 +1,16 @@
+# Started by OnFailure= of other WhoDatJet units; %i is the failed unit's name.
+[Unit]
+Description=WhoDatJet: alert that %i failed
+
+[Service]
+Type=oneshot
+User=whodatjet
+Group=whodatjet
+EnvironmentFile=/etc/whodatjet.env
+Environment=WHODATJET_LOG_FORMAT=json
+ExecStart=/opt/whodatjet/current/.venv/bin/whodatjet notify --event unit_failed --unit %i
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/whodatjet

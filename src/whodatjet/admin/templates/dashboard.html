@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block body %}<h1>Dashboard</h1>
+{% if default_pw %}<div class="banner"><strong>The default admin password is still in use.</strong> Change it now.</div>{% endif %}
+{% if alerts %}<div class="card"><h2>Active alerts ({{ alerts|length }})</h2><div class="scroll"><table><tr><th>Event</th><th>Since</th><th>Detail</th></tr>
+{% for a in alerts %}<tr><td class="err">{{ a.event }}</td><td>{{ a.first_fired_at }}</td><td>{{ a.detail }}</td></tr>{% endfor %}</table></div></div>
+{% else %}<p class="okmsg">No active alerts.</p>{% endif %}
+<div class="grid">
+<div class="card"><div class="k">Version / profile</div><div class="v">{{ s.version }} · {{ s.profile }}</div></div>
+<div class="card"><div class="k">Last ingest</div><div class="v">{{ (s.last_run or {}).get('status', '–') }}</div><div class="k">{{ (s.last_run or {}).get('started_at', '') }}</div></div>
+<div class="card"><div class="k">Verified coverage</div><div class="v">{{ s.coverage_end or '–' }}</div><div class="k {{ 'err' if s.stale }}">age {{ s.data_age_days if s.data_age_days is not none else '–' }} d{{ ' · STALE' if s.stale }}</div></div>
+<div class="card"><div class="k">Snapshots / open gaps</div><div class="v">{{ s.snapshots or 0 }} / {{ (s.open_gaps or [])|length }}</div></div>
+<div class="card"><div class="k">Data volume</div><div class="v">{{ s.disk_free_pct if s.disk_free_pct is not none else '–' }}% free</div><div class="k">{% if disk_days is not none %}~{{ disk_days }} days until full{% else %}projection n/a{% endif %}</div></div>
+<div class="card"><div class="k">Archive store</div><div class="v {{ 'okmsg' if health.ok else 'err' }}">{{ health.kind }} · {{ 'reachable' if health.ok else 'UNREACHABLE' }}</div><div class="k">{{ health.location }}</div><div class="k">Replica: none configured</div></div>
+<div class="card"><div class="k">API, last 24 h</div><div class="v">{{ m.r }} requests</div><div class="k">p95 {{ '%.1f'|format(m.p) if m.p is not none else '–' }} ms · 401: {{ m.a }} · 503: {{ m.b }}</div></div>
+</div>
+{% if s.open_gaps %}<div class="card"><h2>Open gaps</h2><ul>{% for g in s.open_gaps %}<li>{{ g.after }} → {{ g.before }} ({{ g.missed }} publication days missed)</li>{% endfor %}</ul></div>{% endif %}
+{% endblock %}

@@ -11,8 +11,11 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from whodatjet import auth, coverage, db
+from whodatjet import alerts, auth, coverage, db, logs, notify
+from whodatjet import backup as backup_mod
+from whodatjet import ingest as ingest_mod
 from whodatjet import rebuild as rebuild_mod
+from whodatjet import status as status_mod
 from whodatjet.archive_store import open_store
 from whodatjet.collect import LockBusy, collect, ingest_lock
 from whodatjet.config import ConfigError, load_config, load_env_file
@@ -25,7 +28,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env-file", type=Path, help="load settings from this file (environment wins)")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("collect", help="download today's FAA archive and store it if new")
+    sub.add_parser("collect", help="download today's FAA archive and store it if new (no import)")
+    sub.add_parser("ingest", help="collect, then import anything new (what the daily timer runs)")
+    bk = sub.add_parser("backup", help="online backup of whodatjet.db and admin.db")
+    bk.add_argument("--keep", type=int, default=14, help="backups to keep per database (0 = all)")
+    bk.add_argument("--dest", type=Path, help="destination directory (default <data_dir>/backups)")
+    st = sub.add_parser("status", help="operational summary")
+    st.add_argument("--json", action="store_true")
+    nt = sub.add_parser("notify", help="send an alert (logged; posted to Slack if configured)")
+    nt.add_argument("--event", default="unit_failed", help=f"one of: {', '.join(notify.EVENTS)}")
+    nt.add_argument("--detail", default="", help="short detail line (no secrets or registrant data)")
+    nt.add_argument("--unit", help="failed systemd unit name (used by whodatjet-alert@.service)")
     arch = sub.add_parser("archives", help="inspect the archive store")
     arch.add_argument("action", choices=["list"])
     sub.add_parser("import", help="import archives from the store that are not yet in the registry database")
@@ -44,23 +57,70 @@ def main(argv: list[str] | None = None) -> int:
     keys_sub.add_parser("list", help="list keys and usage")
     kr = keys_sub.add_parser("revoke", help="revoke a key by id or display prefix")
     kr.add_argument("ident")
+    sub.add_parser("serve-admin", help="run the admin console (one worker; separate port from the API)")
+    sub.add_parser("watchdog", help="run health checks once and raise or resolve alerts")
+    adm_p = sub.add_parser("admin", help="manage admin console accounts")
+    adm_sub = adm_p.add_subparsers(dest="admin_action", required=True)
+    adm_sub.add_parser("init", help="create the default admin account if none exists")
+    adm_sub.add_parser("list", help="list admin accounts")
+    rp = adm_sub.add_parser("reset-password", help="reset a password to 'admin' and force a change at next login")
+    rp.add_argument("username")
     mig = sub.add_parser("migrate", help="apply pending database migrations")
     mig.add_argument("--database", choices=["registry", "admin", "all"], default="all")
     mig.add_argument("--status", action="store_true", help="show applied/pending migrations without applying")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    for noisy in ("botocore", "boto3", "urllib3", "httpx", "httpcore"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
-
     try:
         if args.env_file:
             load_env_file(args.env_file)
+        logs.configure(verbose=args.verbose)
         cfg = load_config()
     except (ConfigError, OSError) as exc:
+        logs.configure(verbose=args.verbose)
         print(f"configuration error: {exc}", file=sys.stderr)
         return 2
+
+    if args.command == "ingest":
+        try:
+            ing = ingest_mod.ingest(cfg)
+        except LockBusy as exc:
+            logging.getLogger("whodatjet").info("%s; skipping this run", exc)
+            return 0
+        except ConfigError as exc:
+            print(f"configuration error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(ing.summary(), indent=2))
+        if ing.ok:
+            for k in ("ingest_failed", "format_changed", "unit_failed:whodatjet-ingest.service"):
+                alerts.resolve(cfg.admin_db_path, k, "The last ingest run succeeded.")
+        if not ing.ok:
+            fmt = any("SchemaMismatch" in (r.error or "") for r in ing.imports)
+            alerts.fire(cfg.admin_db_path, "format_changed" if fmt else "ingest_failed",
+                        "format_changed" if fmt else "ingest_failed",
+                        ing.collect.error or ing.error or next((r.error or "" for r in ing.imports
+                                                                if r.error), "unknown error"))
+        return 0 if ing.ok else 1
+
+    if args.command == "backup":
+        files = backup_mod.backup({"whodatjet": cfg.registry_db_path, "admin": cfg.admin_db_path},
+                                  args.dest or cfg.data_dir / "backups", keep=args.keep)
+        for f in files:
+            print(f"{f.path}  {f.bytes / 1e6:.1f} MB")
+        return 0 if files else 1
+
+    if args.command == "status":
+        s = status_mod.gather(cfg, datetime.now(CHICAGO).date())
+        print(json.dumps(s, indent=2, default=str) if args.json else status_mod.render(s))
+        return 0
+
+    if args.command == "notify":
+        detail = args.detail or (f"systemd unit {args.unit} failed; see `journalctl -u {args.unit}`"
+                                 if args.unit else "")
+        if args.event == "test":
+            return 0 if notify.send(args.event, detail, admin_db=cfg.admin_db_path) else 1
+        key = f"unit_failed:{args.unit}" if args.unit else args.event
+        alerts.fire(cfg.admin_db_path, key, args.event, detail)
+        return 0
 
     if args.command == "collect":
         try:
@@ -145,6 +205,55 @@ def main(argv: list[str] | None = None) -> int:
                     proxy_headers=False, server_header=False, log_level="info")
         return 0
 
+    if args.command == "serve-admin":
+        import uvicorn
+
+        if args.env_file:
+            os.environ["WHODATJET_ENV_FILE"] = str(args.env_file.resolve())
+        uvicorn.run("whodatjet.admin.app:create_app_from_env", factory=True,
+                    host=os.environ.get("WHODATJET_ADMIN_HOST", "127.0.0.1"),
+                    port=int(os.environ.get("WHODATJET_ADMIN_PORT", "8001")), workers=1,
+                    proxy_headers=False, server_header=False, log_level="info")
+        return 0
+
+    if args.command == "watchdog":
+        from whodatjet import watchdog
+
+        admin_port = os.environ.get("WHODATJET_ADMIN_PORT", "8001")
+        checks = watchdog.run(cfg, admin_url=f"http://127.0.0.1:{admin_port}/healthz"
+                              if os.environ.get("WHODATJET_ADMIN_ENABLED", "1") != "0" else None)
+        bad = [c for c in checks if c.problem]
+        for c in bad:
+            print(f"PROBLEM {c.key}: {c.problem}")
+        print(f"{len(checks) - len(bad)}/{len(checks)} checks healthy")
+        return 0
+
+    if args.command == "admin":
+        from whodatjet.admin import accounts
+
+        conn = db.connect_writer(cfg.admin_db_path)
+        try:
+            db.migrate(conn, db.load_migrations("admin"))
+            actor = f"cli:{getpass.getuser()}"
+            if args.admin_action == "init":
+                made = accounts.ensure_default_admin(conn)
+                print("created admin/admin (password change forced at first login)" if made
+                      else "an admin account already exists")
+            elif args.admin_action == "list":
+                for row in conn.execute("SELECT username, disabled_at, must_change_password, last_login_at "
+                                        "FROM admin_user ORDER BY id"):
+                    print(f"{row['username']:20s} {'disabled' if row['disabled_at'] else 'active':9s} "
+                          f"{'password change pending' if row['must_change_password'] else '':24s} "
+                          f"last login {row['last_login_at'] or '-'}")
+            else:
+                if not accounts.reset_password(conn, args.username, actor=actor):
+                    print(f"no such admin: {args.username}", file=sys.stderr)
+                    return 1
+                print(f"{args.username}: password reset to 'admin'; a change is required at next login")
+        finally:
+            conn.close()
+        return 0
+
     if args.command == "keys":
         conn = db.connect_writer(cfg.admin_db_path)
         try:
@@ -160,12 +269,12 @@ def main(argv: list[str] | None = None) -> int:
                 rows = auth.list_keys(conn)
                 print(f"{'id':>4}  {'prefix':12}  {'scope':7}  {'status':8}  {'24h':>6}  {'30d':>7}  "
                       f"{'expires':10}  {'last used':20}  name")
-                for k in rows:
-                    state = "revoked" if k["revoked_at"] else (
-                        "expired" if k["expires_at"] and k["expires_at"] < date.today().isoformat() else "active")
-                    print(f"{k['id']:>4}  {k['key_prefix']:12}  {k['scope']:7}  {state:8}  {k['requests_24h']:>6}  "
-                          f"{k['requests_30d']:>7}  {k['expires_at'] or '-':10}  {k['last_used_at'] or '-':20}  "
-                          f"{k['name']}")
+                for row in rows:
+                    expired = bool(row["expires_at"]) and row["expires_at"] < date.today().isoformat()
+                    state = "revoked" if row["revoked_at"] else ("expired" if expired else "active")
+                    print(f"{row['id']:>4}  {row['key_prefix']:12}  {row['scope']:7}  {state:8}  "
+                          f"{row['requests_24h']:>6}  {row['requests_30d']:>7}  {row['expires_at'] or '-':10}  "
+                          f"{row['last_used_at'] or '-':20}  {row['name']}")
             else:
                 n = auth.revoke_key(conn, args.ident, revoked_by=actor)
                 print("revoked (takes effect within 30 seconds)" if n else "no active key matched")

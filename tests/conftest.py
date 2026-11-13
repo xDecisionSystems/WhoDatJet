@@ -30,7 +30,7 @@ def make_zip(files: dict[str, str] | None = None, mtime=(2026, 11, 11, 23, 30, 0
 
 @pytest.fixture
 def s3cfg() -> S3Config:
-    return S3Config(endpoint_url=None, region="us-east-1", bucket="archives", prefix="whodatjet/",
+    return S3Config(endpoint_url=None, region="us-east-1", bucket="archives", prefix="faa-aircraft-database/",
                     addressing_style="path", ca_bundle=None, access_key_id="test", secret_access_key="test")
 
 

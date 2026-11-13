@@ -1,0 +1,33 @@
+[Unit]
+Description=WhoDatJet API
+Documentation=https://github.com/xDecisionSystems/WhoDatJet
+Wants=network-online.target
+After=network-online.target
+OnFailure=whodatjet-alert@%n.service
+
+[Service]
+Type=exec
+User=whodatjet
+Group=whodatjet
+EnvironmentFile=/etc/whodatjet.env
+EnvironmentFile=-/etc/whodatjet/archive-store.env
+Environment=WHODATJET_LOG_FORMAT=json
+ExecStart=/opt/whodatjet/current/.venv/bin/whodatjet serve
+Restart=on-failure
+RestartSec=5
+# The API only reads registry data; it writes usage metrics to admin.db.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/whodatjet
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

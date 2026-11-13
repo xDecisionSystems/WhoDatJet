@@ -1,0 +1,18 @@
+:root{--bg:#f6f7f9;--fg:#1c2330;--muted:#5d6878;--card:#fff;--line:#d9dee6;--accent:#1f5fbf;--bad:#b3261e;--ok:#1b7a3e;--warn:#9a6700}
+@media(prefers-color-scheme:dark){:root{--bg:#10141b;--fg:#e6e9ef;--muted:#99a3b3;--card:#181d27;--line:#2b3342;--accent:#6ca0f0;--bad:#f2867f;--ok:#58c27d;--warn:#e3b341}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:.5rem 1.25rem;align-items:center;padding:.75rem 1rem;background:var(--card);border-bottom:1px solid var(--line)}
+header strong{margin-right:.5rem}nav{display:flex;flex-wrap:wrap;gap:.25rem 1rem;flex:1}nav a{color:var(--muted);text-decoration:none}nav a.on,nav a:hover{color:var(--accent)}
+main{max-width:1100px;margin:0 auto;padding:1rem}h1{font-size:1.4rem;margin:.25rem 0 1rem}h2{font-size:1.1rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:1rem;margin-bottom:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.75rem}.grid .card{margin:0}
+.k{color:var(--muted);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}.v{font-size:1.25rem;font-weight:600}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.4rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:.85rem}
+.scroll{overflow-x:auto}label{display:block;margin:.6rem 0 .2rem;color:var(--muted);font-size:.9rem}
+input,select,textarea{width:100%;max-width:34rem;padding:.45rem .55rem;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
+input[type=checkbox]{width:auto}.check{display:flex;gap:.5rem;align-items:center;margin:.25rem 0;color:var(--fg)}
+button,.btn{padding:.45rem .9rem;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font:inherit;cursor:pointer}
+button.secondary{background:transparent;color:var(--accent)}button.danger{background:var(--bad);border-color:var(--bad)}
+.err{color:var(--bad)}.okmsg{color:var(--ok)}.warn{color:var(--warn)}.banner{border-left:4px solid var(--bad);padding:.6rem .8rem;background:var(--card);margin-bottom:1rem}
+code,pre{font-family:ui-monospace,monospace}pre{background:var(--bg);border:1px solid var(--line);padding:.75rem;border-radius:6px;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
+.pill{display:inline-block;padding:0 .5rem;border-radius:99px;border:1px solid var(--line);font-size:.8rem}.inline{display:inline}

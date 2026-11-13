@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block title %}API keys · WhoDatJet{% endblock %}
+{% block body %}<h1>API keys</h1>
+{% if issued %}<div class="card"><h2>New key — shown once</h2><p>Copy it now; it cannot be shown again.</p>
+<pre id="newkey">{{ issued.key }}</pre><p><button type="button" data-copy="newkey">Copy</button></p></div>{% endif %}
+<div class="card"><p>Show: {% for f in ["all", "active", "revoked", "expired"] %}<a href="/keys?filter={{ f }}" class="{{ 'on' if filter == f }}">{{ f }}</a> {% endfor %}</p>
+<div class="scroll"><table><tr><th>Name</th><th>Owner</th><th>Prefix</th><th>Scope</th><th>Created</th><th>Expires</th><th>Last used</th><th>24 h</th><th>30 d</th><th>Status</th><th></th></tr>
+{% for k in keys %}<tr><td>{{ k.name }}</td><td>{{ k.owner_contact or '' }}</td><td><code>{{ k.key_prefix }}</code></td><td>{{ k.scope }}</td>
+<td>{{ k.created_at[:10] }} <span class="k">{{ k.created_by }}</span></td><td>{{ k.expires_at or '–' }}</td><td>{{ k.last_used_at or '–' }}</td><td>{{ k.requests_24h }}</td><td>{{ k.requests_30d }}</td><td><span class="pill">{{ k.state }}</span></td>
+<td>{% if k.state == 'active' %}<form method="post" action="/keys/{{ k.id }}/revoke" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Revoke</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="11">No keys.</td></tr>{% endfor %}</table></div></div>
+<div class="card"><h2>Issue a key</h2>{% if error %}<p class="err">{{ error }}</p>{% endif %}
+<form method="post" action="/keys/create"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="name">Name</label><input id="name" name="name" required>
+<label for="scope">Scope</label><select id="scope" name="scope"><option value="query">query (all /v1 endpoints)</option><option value="monitor">monitor (/v1/status only)</option></select>
+<label for="owner">Owner / contact</label><input id="owner" name="owner">
+<label for="exp">Expires (last valid day, optional)</label><input id="exp" name="expires" type="date">
+<label for="rl">Rate limit, requests/minute (optional)</label><input id="rl" name="rate_limit" type="number" min="1">
+<label for="note">Note</label><input id="note" name="note">
+<p><button>Issue key</button></p></form></div>{% endblock %}

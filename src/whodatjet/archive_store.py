@@ -1,6 +1,9 @@
 """Archive storage. Archives are irreplaceable: objects are written once and never overwritten or deleted.
 
-Keys are relative to the store root/prefix: daily/<source_date>/<content_sha256>.zip
+Keys are relative to the store root/prefix: <year>/<source_date>_<content_sha256>.zip
+(the bucket itself is faa-aircraft-database; the S3 prefix is empty by default).
+Legacy keys daily/<source_date>/<content_sha256>.zip
+are still recognised.
 Each archive carries metadata (S3 object metadata, or a JSON sidecar for the filesystem store).
 """
 
@@ -22,7 +25,7 @@ from botocore.exceptions import ClientError
 
 from whodatjet.config import Config, S3Config
 
-DAILY_KEY_RE = re.compile(r"^daily/(\d{4}-\d{2}-\d{2})/([0-9a-f]{64})\.zip$")
+KEY_RE = re.compile(r"^(?:\d{4}/(\d{4}-\d{2}-\d{2})_|daily/(\d{4}-\d{2}-\d{2})/)([0-9a-f]{64})\.zip$")
 CHUNK = 1024 * 1024
 
 
@@ -39,7 +42,7 @@ class StoredArchive:
 
 
 def daily_key(source_date: date, content_sha256: str) -> str:
-    return f"daily/{source_date.isoformat()}/{content_sha256}.zip"
+    return f"{source_date.year}/{source_date.isoformat()}_{content_sha256}.zip"
 
 
 def sha256_file(path: Path) -> str:
@@ -65,8 +68,13 @@ class ArchiveStore(Protocol):
 
 
 def _parse_key(key: str, size: int) -> StoredArchive | None:
-    m = DAILY_KEY_RE.match(key)
-    return StoredArchive(key, date.fromisoformat(m.group(1)), m.group(2), size) if m else None
+    m = KEY_RE.match(key)
+    if not m:
+        return None
+    d = date.fromisoformat(m.group(1) or m.group(2))
+    if not key.startswith("daily/") and key[:4] != str(d.year):
+        return None
+    return StoredArchive(key, d, m.group(3), size)
 
 
 class FilesystemArchiveStore(ArchiveStore):
@@ -83,13 +91,15 @@ class FilesystemArchiveStore(ArchiveStore):
         return p
 
     def list_daily(self) -> list[StoredArchive]:
-        daily = self.root / "daily"
         out = []
-        if daily.exists():
-            for p in daily.glob("*/*.zip"):
-                a = _parse_key(p.relative_to(self.root).as_posix(), p.stat().st_size)
-                if a:
-                    out.append(a)
+        for p in self.root.glob("*/*.zip"):
+            a = _parse_key(p.relative_to(self.root).as_posix(), p.stat().st_size)
+            if a:
+                out.append(a)
+        for p in self.root.glob("daily/*/*.zip"):
+            a = _parse_key(p.relative_to(self.root).as_posix(), p.stat().st_size)
+            if a:
+                out.append(a)
         return sorted(out, key=lambda a: (a.source_date, a.key))
 
     def exists(self, key: str) -> bool:
@@ -153,7 +163,7 @@ class S3ArchiveStore(ArchiveStore):
     def list_daily(self) -> list[StoredArchive]:
         out: list[StoredArchive] = []
         paginator = self.s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=self.bucket, Prefix=self._full("daily/")):
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
             for obj in page.get("Contents", []):
                 a = _parse_key(obj["Key"][len(self.prefix):], obj["Size"])
                 if a:

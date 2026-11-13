@@ -1,0 +1,7 @@
+{% extends "base.html" %}{% block title %}Monitoring · WhoDatJet{% endblock %}
+{% block body %}<h1>Homepage monitoring</h1>
+<div class="card"><p>Issues a <code>monitor</code>-scoped key (it can only call <code>/v1/status</code>) and generates a ready-to-paste <code>services.yaml</code> entry.
+Put the key in a Homepage environment variable named <code>HOMEPAGE_VAR_WHODATJET_KEY</code>, not in the YAML.</p>
+<form method="post" action="/monitoring/issue"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Issue monitor key and generate entry</button></form></div>
+{% if issued %}<div class="card"><h2>Monitor key — shown once</h2><pre id="mkey">{{ issued.key }}</pre><p><button type="button" data-copy="mkey">Copy</button></p>
+<h2>services.yaml</h2><pre id="yaml">{{ yaml }}</pre><p><button type="button" data-copy="yaml">Copy</button></p></div>{% endif %}{% endblock %}

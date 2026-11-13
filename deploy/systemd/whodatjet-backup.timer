@@ -1,0 +1,11 @@
+[Unit]
+Description=WhoDatJet: daily database backup
+
+[Timer]
+# After the morning ingest run.
+OnCalendar=*-*-* 08:00:00 America/Chicago
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

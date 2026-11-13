@@ -1,0 +1,4 @@
+{% extends "base.html" %}{% block title %}Audit log · WhoDatJet{% endblock %}
+{% block body %}<h1>Audit log</h1><div class="card"><div class="scroll"><table><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr>
+{% for r in rows %}<tr><td>{{ r.at }}</td><td>{{ r.actor }}</td><td>{{ r.action }}</td><td>{{ r.target or '' }}</td><td><code>{{ r.detail_json or '' }}</code></td></tr>{% else %}<tr><td colspan="5">Nothing yet.</td></tr>{% endfor %}</table></div>
+<p>{% if page > 0 %}<a href="/audit?page={{ page - 1 }}">← newer</a> {% endif %}{% if more %}<a href="/audit?page={{ page + 1 }}">older →</a>{% endif %}</p></div>{% endblock %}

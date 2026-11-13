@@ -61,6 +61,8 @@ This keeps the service lightweight and makes its data directory easy to back up.
 │   │   ├── whodatjet-ingest.timer
 │   │   ├── whodatjet-watchdog.service
 │   │   ├── whodatjet-watchdog.timer
+│   │   ├── whodatjet-backup.service
+│   │   ├── whodatjet-backup.timer     # daily online backup of both databases
 │   │   └── whodatjet-alert@.service   # OnFailure= hook -> whodatjet notify
 │   ├── proxmox/
 │   │   ├── install.sh         # runs on Proxmox host; creates/provisions LXC
@@ -493,7 +495,7 @@ The response is computed from both databases (read-only) and the data volume's f
 
 ## Daily ingestion
 
-- `whodatjet-ingest.timer` uses `OnCalendar=*-*-* 00:15:00 America/Chicago` and `*-*-* 06:15:00 America/Chicago`, with `Persistent=true` and `RandomizedDelaySec=10m`. The morning run catches late FAA refreshes. On non-publication days the runs are cheap duplicates.
+- `whodatjet-ingest.timer` runs `whodatjet ingest` (collect, then import anything not yet imported, under one lock) and uses `OnCalendar=*-*-* 00:15:00 America/Chicago` and `*-*-* 06:15:00 America/Chicago`, with `Persistent=true` and `RandomizedDelaySec=10m`. The morning run catches late FAA refreshes. On non-publication days the runs are cheap duplicates.
 - Transient network failures retry with bounded exponential backoff. Exhausted retries record a `failed` run and exit nonzero. `OnFailure=whodatjet-alert@%n.service` runs `whodatjet notify`, which posts to the Slack webhook configured in the admin console (see [Slack notifications](#slack-notifications)).
 - The downloader URL, expected file set, required columns, and HTTP `User-Agent` are configuration. The User-Agent is a descriptive service string. Phase 0 confirmed the FAA accepts it, and that its CDN answers `HEAD` with `503`, so the downloader uses `GET` only.
 - Ingestion is idempotent: rerunning a download/import cannot duplicate snapshots, aircraft, records, or intervals.
@@ -679,3 +681,38 @@ Automatic application updates are out of scope. FAA data ingestion is automated,
 ## Decisions needed before implementation
 
 None outstanding. Phase 0 findings (archive sizes, FAA client behavior) may surface new ones.
+
+## Implementation review — 2026-11-13
+
+The architecture remains appropriate for a single registry writer and modest operational complexity.
+Keep the identity limitations and observed-versus-effective date distinction explicit in API results.
+The delivery phases above describe the target, not a completed deployment checklist.
+
+Review fixes:
+
+- Registry lookup, history, aircraft, and snapshot queries now hold a read transaction across their
+  SELECTs. WAL permits the importer to commit while a response retains a consistent snapshot. A
+  deterministic concurrent-writer regression test covers this behavior.
+- Online backups now use unique temporary files with mode 0600 from creation, clean up after failure,
+  and preserve the previous destination until the replacement passes its integrity check. Database
+  paths containing URI punctuation are escaped correctly. Tests cover privacy during copy and failure.
+- Each database backup is consistent individually; the two databases do not share a transaction.
+  Update rollback must still stop ingestion and administrative writes before taking a coordinated pair.
+
+Remaining release gates, in priority order:
+
+1. Implement the signed-release workflow, verified updater, migration compatibility checks, and tested
+   rollback. `deploy/install.sh` currently installs a Git ref in a guest, defaults to a moving branch,
+   and switches `current` without the planned backup/health-check/rollback sequence. Treat it as a
+   development provisioning script until these requirements are met.
+2. Implement Proxmox-host provisioning, persistent-volume backup configuration, LAN TLS/firewall
+   setup, custom sizing, and resizing. The guest installer does not fulfill these host-level steps.
+3. Audit configuration serialization in the installer: values are sourced as shell code, so quotes and
+   newlines in supplied settings must be safely encoded or rejected before files are written.
+4. Validate rebuild swaps with active API readers, replica outage/catch-up, archive migration, and
+   Garage using the deployment acceptance scenarios. Unit tests alone do not establish these guarantees.
+5. Add the README and operations/Homepage guides; measure sizing profiles under realistic load during
+   ingestion, exercise disposable-LXC installation/update/restore, and complete the week-long soak.
+
+Do not publish the proposed capacity estimates as measured limits or mark phases 7–9 complete until
+these checks have evidence. No production installation or infrastructure change was performed by this review.

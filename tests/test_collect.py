@@ -30,8 +30,8 @@ def test_first_run_stores_archive(cfg, store, monkeypatch):
     monkeypatch.setattr(collect_mod, "download", fake_download(make_zip()))
     r = collect_mod.collect(cfg, store)
     assert r.status == "stored"
-    assert r.key.startswith("daily/2026-11-11/") and r.key.endswith(".zip")
-    head = store.s3.head_object(Bucket="archives", Key="whodatjet/" + r.key)
+    assert r.key.startswith("2026/2026-11-11_") and r.key.endswith(".zip")
+    head = store.s3.head_object(Bucket="archives", Key="faa-aircraft-database/" + r.key)
     assert head["Metadata"]["source-date-basis"] == "http_last_modified"
     assert head["Metadata"]["archive-sha256"] == r.archive_sha256
     assert not list(cfg.staging_dir.iterdir())
@@ -53,7 +53,7 @@ def test_new_content_stored_separately(cfg, store, monkeypatch):
     changed = make_zip({**FAA_FILES, "MASTER.txt": FAA_FILES["MASTER.txt"] + "54321,9,2072738,1,\r\n"})
     monkeypatch.setattr(collect_mod, "download", fake_download(changed, "Fri, 13 Nov 2026 05:40:00 GMT"))
     r = collect_mod.collect(cfg, store)
-    assert r.status == "stored" and r.key.startswith("daily/2026-11-12/")
+    assert r.status == "stored" and r.key.startswith("2026/2026-11-12_")
     assert [a.source_date.isoformat() for a in store.list_daily()] == ["2026-11-11", "2026-11-12"]
 
 
@@ -93,9 +93,9 @@ def test_never_overwrites(cfg, store, tmp_path):
     p.write_bytes(b"x")
     import hashlib
     sha = hashlib.sha256(b"x").hexdigest()
-    store.put_verified("daily/2026-11-11/" + "0" * 64 + ".zip", p, sha, {})
+    store.put_verified("2026/2026-11-11_" + "0" * 64 + ".zip", p, sha, {})
     with pytest.raises(ArchiveStoreError, match="overwrite"):
-        store.put_verified("daily/2026-11-11/" + "0" * 64 + ".zip", p, sha, {})
+        store.put_verified("2026/2026-11-11_" + "0" * 64 + ".zip", p, sha, {})
 
 
 def test_concurrent_run_is_skipped(cfg, store):

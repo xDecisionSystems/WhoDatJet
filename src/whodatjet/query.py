@@ -15,10 +15,29 @@ As-of order for `lookup(n, D)`:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
+from functools import wraps
+from typing import Concatenate
 
 from whodatjet import coverage
+
+
+def consistent_read[**P, T](fn: Callable[Concatenate[sqlite3.Connection, P], T]
+                    ) -> Callable[Concatenate[sqlite3.Connection, P], T]:
+    """Hold one WAL snapshot for all SELECTs in a response; preserve caller transactions."""
+    @wraps(fn)
+    def wrapped(conn: sqlite3.Connection, /, *args: P.args, **kwargs: P.kwargs) -> T:
+        if conn.in_transaction:
+            return fn(conn, *args, **kwargs)
+        conn.execute("BEGIN")
+        try:
+            return fn(conn, *args, **kwargs)
+        finally:
+            conn.rollback()
+    return wrapped
+
 
 FIELDS: tuple[str, ...] = (
     "aircraft_id", "faa_unique_id", "identity_basis", "serial_number", "mfr_mdl_code", "manufacturer_name",
@@ -133,6 +152,7 @@ def _assignment(conn, where: str, args: tuple, order: str) -> sqlite3.Row | None
                         f"WHERE {where} ORDER BY {order} LIMIT 1", args).fetchone()
 
 
+@consistent_read
 def lookup(conn: sqlite3.Connection, n_number: str, d: date, *, today: date, gap_threshold: int = 2,
            stale_days: int = coverage.DEFAULT_STALE_DAYS) -> dict | NotFound:
     """`n_number` must already be normalized (with N prefix)."""
@@ -226,6 +246,7 @@ def select_fields(result: dict, fields: tuple[str, ...]) -> dict:
     return {k: result.get(k) for k in METADATA + fields}
 
 
+@consistent_read
 def history(conn: sqlite3.Connection, n_number: str, *, limit: int, offset: int, gap_threshold: int = 2) -> dict | None:
     row = conn.execute("SELECT id FROM tail_number WHERE n_number = ?", (n_number,)).fetchone()
     if row is None:
@@ -263,6 +284,7 @@ def history(conn: sqlite3.Connection, n_number: str, *, limit: int, offset: int,
     return {"n_number": n_number, "items": items, "next_offset": offset + limit if len(rows) > limit else None}
 
 
+@consistent_read
 def aircraft(conn: sqlite3.Connection, aircraft_id: int) -> dict | None:
     ac = conn.execute("SELECT * FROM aircraft WHERE id = ?", (aircraft_id,)).fetchone()
     if ac is None:
@@ -290,6 +312,7 @@ def aircraft(conn: sqlite3.Connection, aircraft_id: int) -> dict | None:
     }
 
 
+@consistent_read
 def snapshots(conn: sqlite3.Connection, *, gap_threshold: int = 2, limit: int = 1000) -> dict:
     snaps = conn.execute(
         "SELECT id, source_date, source_date_basis, downloaded_at, import_status, imported_at, archive_key, "

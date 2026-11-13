@@ -330,3 +330,52 @@ def test_reopens_database_after_file_swap(client, env, world, tmp_path):
     os.replace(other, c.registry_db_path)
     assert len(get(client, env, "/v1/snapshots").json()["snapshots"]) == 1
     shutil.rmtree(other.parent)
+
+
+def test_query_consistent_read_during_writer_commit(tmp_path):
+    from whodatjet.query import consistent_read
+
+    path = tmp_path / "concurrent.db"
+    writer = db.connect_writer(path)
+    writer.execute("CREATE TABLE example (value INTEGER)")
+    writer.execute("INSERT INTO example VALUES (1)")
+    reader = db.connect_reader(path)
+
+    @consistent_read
+    def read_twice(conn):
+        first = conn.execute("SELECT value FROM example").fetchone()[0]
+        writer.execute("UPDATE example SET value = 2")
+        second = conn.execute("SELECT value FROM example").fetchone()[0]
+        return first, second
+
+    try:
+        assert read_twice(reader) == (1, 1)
+        assert not reader.in_transaction
+        assert reader.execute("SELECT value FROM example").fetchone()[0] == 2
+        reader.execute("BEGIN")
+        assert read_twice(reader) == (2, 2)
+        assert reader.in_transaction
+    finally:
+        reader.close()
+        writer.close()
+
+
+def test_query_consistent_read_releases_snapshot_after_error(tmp_path):
+    from whodatjet.query import consistent_read
+
+    writer = db.connect_writer(tmp_path / "error.db")
+    writer.execute("CREATE TABLE example (value INTEGER)")
+    writer.close()
+    reader = db.connect_reader(tmp_path / "error.db")
+
+    @consistent_read
+    def fail(conn):
+        conn.execute("SELECT * FROM example").fetchall()
+        raise ValueError("query failed")
+
+    try:
+        with pytest.raises(ValueError, match="query failed"):
+            fail(reader)
+        assert not reader.in_transaction
+    finally:
+        reader.close()

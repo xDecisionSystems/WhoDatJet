@@ -11,7 +11,7 @@ import json
 import logging
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -117,12 +117,14 @@ def _retry_pending(cfg: Config, store: ArchiveStore, result: RunResult) -> None:
                                        "key": sub.key, "error": sub.error})
 
 
-def collect(cfg: Config, store: ArchiveStore | None = None, *, backoff_s: float = 30) -> RunResult:
+def collect(cfg: Config, store: ArchiveStore | None = None, *, backoff_s: float = 30,
+            lock_held: bool = False) -> RunResult:
+    """Download and retain the FAA archive. Pass `lock_held=True` when the caller holds the ingest lock."""
     result = RunResult(run_id=uuid.uuid4().hex[:12], started_at=_now())
     cfg.staging_dir.mkdir(parents=True, exist_ok=True)
     staged = cfg.staging_dir / f"pending-{result.run_id}.zip"
     try:
-        with ingest_lock(cfg.lock_path):
+        with nullcontext() if lock_held else ingest_lock(cfg.lock_path):
             store = store or open_store(cfg)
             _retry_pending(cfg, store, result)
             dl = download(cfg.faa_url, staged, user_agent=cfg.user_agent,

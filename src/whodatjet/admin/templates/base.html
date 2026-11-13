@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}WhoDatJet admin{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<body>
+<header><strong>WhoDatJet</strong>
+{% if user %}<nav>
+{% for href, label in [("/", "Dashboard"), ("/keys", "API keys"), ("/notifications", "Notifications"), ("/monitoring", "Monitoring"), ("/admins", "Admins"), ("/audit", "Audit log")] %}
+<a href="{{ href }}" class="{{ 'on' if path == href }}">{{ label }}</a>{% endfor %}
+<a href="/password" class="{{ 'on' if path == '/password' }}">Password</a></nav>
+<form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><span class="k">{{ user }}</span> <button class="secondary">Sign out</button></form>{% endif %}
+</header><main>{% block body %}{% endblock %}</main></body></html>

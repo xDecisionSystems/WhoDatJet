@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from whodatjet import __version__, coverage, db, query
+from whodatjet import status as status_mod
 from whodatjet.auth import KeyCache, RateLimiter, UsageRecorder
 from whodatjet.config import Config, load_config, load_env_file
 from whodatjet.faa_client import CHICAGO
@@ -243,10 +244,18 @@ def _status(cfg: Config, registry: Callable[[], sqlite3.Connection], conns: Conn
     except (HTTPException, sqlite3.Error):
         pass
     try:
+        adm = conns.get(cfg.admin_db_path)
+        out["active_alerts"] = adm.execute("SELECT count(*) FROM alert_state WHERE resolved_at IS NULL").fetchone()[0]
+        if out["active_alerts"] and out["status"] == "ok":
+            out["status"] = "degraded"
+    except (HTTPException, sqlite3.Error):
+        pass
+    try:
         du = shutil.disk_usage(cfg.data_dir)
         out["disk_free_pct"] = round(100 * du.free / du.total, 1)
     except OSError:
         pass
+    out["disk_days_remaining"] = status_mod.disk_days_remaining(cfg)
     return out
 
 
