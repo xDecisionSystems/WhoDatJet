@@ -64,6 +64,7 @@ Archive storage (leave --s3-bucket empty to keep archives on local disk):
 
 Access and alerts:
   --tailscale-authkey-file F   Tailscale auth key (else enroll later)  [WHODATJET_TAILSCALE_AUTHKEY]
+  --tailscale-hostname NAME    name on the tailnet (default: --hostname) [WHODATJET_TS_HOSTNAME]
   --slack-webhook-file F       Slack incoming-webhook URL (optional)   [WHODATJET_SLACK_WEBHOOK_URL]
   --ref REF              git branch/tag of WhoDatJet to install        [WHODATJET_REF]  default: main
 USAGE
@@ -102,6 +103,7 @@ while [ $# -gt 0 ]; do
     --s3-secret-key-file) need "$@"; secret_from_file WHODATJET_S3_SECRET_ACCESS_KEY "$1" "$2"; shift ;;
     --tailscale-authkey-file) need "$@"; secret_from_file WHODATJET_TAILSCALE_AUTHKEY "$1" "$2"; shift ;;
     --slack-webhook-file) need "$@"; secret_from_file WHODATJET_SLACK_WEBHOOK_URL "$1" "$2"; shift ;;
+    --tailscale-hostname) need "$@"; WHODATJET_TS_HOSTNAME="$2"; shift ;;
     --ref) need "$@"; REF="$2"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -270,7 +272,7 @@ umask 077
 {
   echo "WHODATJET_REF=$(printf %q "$REF")"
   echo "WHODATJET_PROFILE=$(printf %q "$WDJ_PROFILE")"
-  echo "WHODATJET_TS_HOSTNAME=$(printf %q "$WDJ_HOSTNAME")"
+  echo "WHODATJET_TS_HOSTNAME=$(printf %q "${WHODATJET_TS_HOSTNAME:-$WDJ_HOSTNAME}")"
   for v in WHODATJET_S3_BUCKET WHODATJET_S3_ENDPOINT_URL WHODATJET_S3_REGION WHODATJET_S3_PREFIX \
            WHODATJET_S3_ADDRESSING_STYLE WHODATJET_S3_ACCESS_KEY_ID WHODATJET_S3_SECRET_ACCESS_KEY \
            WHODATJET_TAILSCALE_AUTHKEY WHODATJET_SLACK_WEBHOOK_URL; do
