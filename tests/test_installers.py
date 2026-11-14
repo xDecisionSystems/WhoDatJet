@@ -74,3 +74,11 @@ def test_help_lists_every_option():
                 "--ip", "--gateway", "--dns", "--s3-bucket", "--s3-endpoint", "--s3-secret-key-file",
                 "--tailscale-authkey-file", "--slack-webhook-file", "--version", "--resize", "--dry-run"):
         assert opt in out, opt
+
+
+def test_guest_installer_sets_path_and_shows_cosign_errors():
+    text = (DEPLOY / "install.sh").read_text()
+    assert 'export PATH="/usr/local/sbin:/usr/local/bin:' in text            # pct exec has no /usr/local/bin
+    assert "/usr/local/bin/cosign verify-blob" in text                        # not resolved through PATH
+    assert 'cat "$tmp/cosign.err" >&2' in text                                # the real error is shown
+    assert 'verify-blob' in text and '>/dev/null 2>&1' not in text.split("verify-blob", 1)[1].split("die", 1)[0]

@@ -18,6 +18,8 @@
 #   WHODATJET_ADMIN_PREFIX (default /admin; empty to serve the console at the root of its own host name)
 #   WHODATJET_FIRST_INGEST=no     skip the first download/import
 set -euo pipefail
+# uv and cosign live in /usr/local/bin, which minimal environments (pct exec, cron) may not have on PATH.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 # Settings handed over by the Proxmox installer (a 0600 file of VAR=value lines); read once, then deleted.
 if [ -n "${WHODATJET_ANSWERS_FILE:-}" ] && [ -r "$WHODATJET_ANSWERS_FILE" ]; then
@@ -119,10 +121,10 @@ if [ -n "$VERSION" ]; then
   base="https://github.com/$REPO/releases/download/$VERSION"
   curl -fsSL -o "$tmp/manifest.json" "$base/manifest.json"
   curl -fsSL -o "$tmp/manifest.json.sigstore.json" "$base/manifest.json.sigstore.json"
-  cosign verify-blob --bundle "$tmp/manifest.json.sigstore.json" \
+  /usr/local/bin/cosign verify-blob --bundle "$tmp/manifest.json.sigstore.json" \
     --certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$VERSION" \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com "$tmp/manifest.json" >/dev/null 2>&1 \
-    || die "the release signature is NOT valid; nothing was installed"
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com "$tmp/manifest.json" >/dev/null 2>"$tmp/cosign.err" \
+    || { cat "$tmp/cosign.err" >&2; die "could not verify the release signature (see the message above); nothing was installed"; }
   tarball="whodatjet-$VERSION.tar.gz"
   want_sha="$(python3 - "$tmp/manifest.json" "$tarball" "$VERSION" <<'PY'
 import json, sys
