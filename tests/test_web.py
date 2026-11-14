@@ -111,3 +111,14 @@ def test_card_shows_manufacturer_model_code_and_extra_facts():
 def test_page_has_also_registered_block(client):
     html = client.get("/").text
     assert 'id="owner-also"' in html and "Also registered to" in html
+
+
+def test_card_has_no_registered_since_field():
+    """valid_from is the date WhoDatJet first saw a registration, not a real registration date; it must not be
+    shown under a label that suggests otherwise (owner decision 2026-11-14)."""
+    from whodatjet.web import describe
+    card = describe({"n_number": "N1", "date": "2026-11-14", "manufacturer_name": "X", "model_name": "Y",
+                     "valid_from": "2026-11-11", "certificate_issue_date": "1985-01-07", "other_names": []})
+    labels = [f["label"] for f in card["facts"]]
+    assert "Registered since" not in labels and "2026-11-11" not in [f["value"] for f in card["facts"]]
+    assert "Certificate issued" in labels                       # the real registration date stays

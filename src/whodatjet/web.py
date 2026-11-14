@@ -104,7 +104,6 @@ def describe(record: dict) -> dict:
         ("Certificate issued", _clean(record.get("certificate_issue_date"))),
         ("Registration expires", _clean(record.get("expiration_date"))),
         ("Mode S (hex)", _clean(record.get("mode_s_code_hex"))),
-        ("Registered since", _clean(record.get("valid_from"))),
         ("Last FAA action", _clean(record.get("last_action_date"))),
     ]
     return {
