@@ -14,6 +14,8 @@
 #                        archive store; leave the bucket empty to keep archives on local disk
 #   WHODATJET_SLACK_WEBHOOK_URL   optional alert webhook
 #   WHODATJET_TAILSCALE_AUTHKEY   optional; otherwise run `tailscale up` yourself afterwards
+#   WHODATJET_API_BIND (default 0.0.0.0), WHODATJET_ADMIN_BIND (default 127.0.0.1)   listen addresses
+#   WHODATJET_ADMIN_PREFIX (default /admin; empty to serve the console at the root of its own host name)
 #   WHODATJET_FIRST_INGEST=no     skip the first download/import
 set -euo pipefail
 
@@ -82,26 +84,12 @@ if [ -n "${WHODATJET_TAILSCALE_AUTHKEY:-}" ] && ! tailscale status >/dev/null 2>
   tailscale up --authkey "$WHODATJET_TAILSCALE_AUTHKEY" --hostname "${WHODATJET_TS_HOSTNAME:-$(hostname)}" \
     --accept-dns=false
 fi
-TS_UP=0
 if tailscale status >/dev/null 2>&1; then
-  TS_UP=1
-  # Publish the API (HTTPS 443) and the admin console (HTTPS 8443) on the tailnet; the services themselves
-  # listen on 127.0.0.1, so nothing depends on the tailscale0 address existing at boot.
-  # `tailscale serve` blocks waiting for approval when Serve/HTTPS is not enabled on the tailnet, so bound it.
-  serve_out="$(timeout 20 tailscale serve --bg http://127.0.0.1:8000 2>&1 </dev/null)" || serve_failed=1
-  [ -n "${serve_failed:-}" ] || timeout 20 tailscale serve --bg --https=8443 http://127.0.0.1:8001 >/dev/null 2>&1 </dev/null \
-    || serve_failed=1
-  if [ -n "${serve_failed:-}" ]; then
-    echo "WARNING: could not publish the web pages with 'tailscale serve'."
-    echo "$serve_out" | grep -E 'https://' | head -2
-    echo "Enable Serve (and HTTPS certificates) for the tailnet in the Tailscale admin console, then run:"
-    echo "  tailscale serve --bg http://127.0.0.1:8000 && tailscale serve --bg --https=8443 http://127.0.0.1:8001"
-  fi
   echo "Joined the tailnet as $(tailscale status --self --json 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || hostname)"
 else
   echo "Tailscale is installed but not connected. Run: tailscale up --hostname ${WHODATJET_TS_HOSTNAME:-$(hostname)} --accept-dns=false"
-  echo "  then: tailscale serve --bg http://127.0.0.1:8000 && tailscale serve --bg --https=8443 http://127.0.0.1:8001"
 fi
+# The web pages are published through NPMplus (HTTPS on the lab's wildcard certificate); `tailscale serve` is not used.
 
 say "Fetching WhoDatJet ($REF)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
@@ -125,6 +113,12 @@ if [ ! -f "$ENV_FILE" ]; then
       "$rel/deploy/systemd/whodatjet.env.example" > "$ENV_FILE"
   ask WHODATJET_SLACK_WEBHOOK_URL "Slack webhook URL for alerts (blank to skip)" "" secret
   [ -z "${WHODATJET_SLACK_WEBHOOK_URL:-}" ] || echo "WHODATJET_SLACK_WEBHOOK_URL=$WHODATJET_SLACK_WEBHOOK_URL" >> "$ENV_FILE"
+  # Reverse-proxy friendly: the API listens on the container's network address; the admin console stays on
+  # loopback unless WHODATJET_ADMIN_BIND is set (e.g. 0.0.0.0 when NPMplus publishes it).
+  # The console is served under /admin by default so one NPMplus host can publish API (/) and console (/admin).
+  sed -i -e "s#^WHODATJET_ADMIN_PREFIX=.*#WHODATJET_ADMIN_PREFIX=${WHODATJET_ADMIN_PREFIX-/admin}#" \
+         -e "s/^WHODATJET_API_HOST=.*/WHODATJET_API_HOST=${WHODATJET_API_BIND:-0.0.0.0}/" \
+         -e "s/^WHODATJET_ADMIN_HOST=.*/WHODATJET_ADMIN_HOST=${WHODATJET_ADMIN_BIND:-127.0.0.1}/" "$ENV_FILE"
   chown root:whodatjet "$ENV_FILE"; chmod 0640 "$ENV_FILE"
 else
   say "$ENV_FILE exists; keeping it"
@@ -205,6 +199,7 @@ fi
 say "Done"
 systemctl --no-pager --lines=0 status whodatjet-api.service | head -4 || true
 echo "Check:    $APP/current/.venv/bin/whodatjet status   (as root, with: set -a; . /etc/whodatjet.env; . $STORE_ENV; set +a)"
-[ "$TS_UP" = 1 ] && echo "Admin console: https://$(tailscale status --self --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))'):8443  (admin / admin; you must change the password at first login)" || echo "Admin console: https://<this-host>.<tailnet>.ts.net:8443 once Tailscale is connected (admin / admin; change the password at first login)"
+echo "Pages:    the API listens on port 8000 and the admin console on 8001 (loopback unless WHODATJET_ADMIN_BIND is set);"
+echo "          publish them with NPMplus proxy hosts (forward to http://<this-ip>:8000 and :8001). Admin sign-in: admin / admin, change it at first login."
 echo "Logs:     journalctl -u whodatjet-api -u whodatjet-ingest"
 echo "Update:   re-run the install command."

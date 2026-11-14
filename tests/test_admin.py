@@ -517,3 +517,47 @@ def test_watchdog_stale_data(hooked, slack, tmp_path):
     from datetime import date
     assert "data_stale" not in problems(wd(hooked, slack, today=date(2026, 11, 10), state_file=tmp_path / "s"))
     assert "data_stale" in problems(wd(hooked, slack, today=date(2026, 11, 20), state_file=tmp_path / "s"))
+
+
+# ------------------------------------------------------------------ served under a path prefix (https://host/admin)
+
+@pytest.fixture
+def pclient(acfg, slack, events):
+    app = create_app(acfg, transport=slack.transport, announce=lambda e, d: events.append((e, d)), prefix="/admin")
+    with TestClient(app, base_url="https://site.test", follow_redirects=False) as tc:
+        yield tc
+
+
+def test_prefix_redirects_links_and_cookies_stay_under_admin(pclient):
+    r = pclient.get("/admin/")
+    assert r.status_code == 303 and r.headers["location"] == "/admin/login"
+    page = pclient.get("/admin/login")
+    assert page.status_code == 200 and 'action="/admin/login"' in page.text
+    assert 'href="/admin/static/style.css"' in page.text and pclient.get("/admin/static/style.css").status_code == 200
+    assert "wdj_login=" in page.headers["set-cookie"] and "Path=/admin/login" in page.headers["set-cookie"]
+    assert pclient.get("/login").status_code == 404                                   # nothing outside the prefix
+
+
+def test_prefix_full_login_flow(pclient):
+    token = re.search(r'name="csrf" value="([^"]+)"', pclient.get("/admin/login").text).group(1)
+    r = post(pclient, "/admin/login", username="admin", password="admin", csrf=token)
+    assert r.status_code == 303 and r.headers["location"] == "/admin/"
+    assert "Path=/admin" in r.headers["set-cookie"]
+    assert pclient.get("/admin/").headers["location"] == "/admin/password"            # forced change, still prefixed
+    tok = re.search(r'name="csrf" value="([0-9a-f]+)"', pclient.get("/admin/password").text).group(1)
+    r = post(pclient, "/admin/password", current="admin", new=GOOD, confirm=GOOD, csrf=tok)
+    assert r.status_code == 303 and r.headers["location"] == "/admin/"
+    dash = pclient.get("/admin/")
+    assert dash.status_code == 200 and 'href="/admin/keys"' in dash.text and 'action="/admin/logout"' in dash.text
+    assert 'href="/keys"' not in dash.text
+    assert post(pclient, "/admin/logout", csrf=csrf_from(pclient, "/admin/")).headers["location"] == "/admin/login"
+
+
+def test_prefix_monitoring_yaml_uses_site_urls(pclient):
+    token = re.search(r'name="csrf" value="([^"]+)"', pclient.get("/admin/login").text).group(1)
+    post(pclient, "/admin/login", username="admin", password="admin", csrf=token)
+    tok = re.search(r'name="csrf" value="([0-9a-f]+)"', pclient.get("/admin/password").text).group(1)
+    post(pclient, "/admin/password", current="admin", new=GOOD, confirm=GOOD, csrf=tok)
+    r = post(pclient, "/admin/monitoring/issue", csrf=csrf_from(pclient, "/admin/monitoring"))
+    assert "href: https://site.test/admin" in r.text
+    assert "siteMonitor: https://site.test/healthz?strict=true" in r.text

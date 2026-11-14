@@ -66,6 +66,9 @@ Access and alerts:
   --tailscale-authkey-file F   Tailscale auth key (else enroll later)  [WHODATJET_TAILSCALE_AUTHKEY]
   --tailscale-hostname NAME    name on the tailnet (default: --hostname) [WHODATJET_TS_HOSTNAME]
   --slack-webhook-file F       Slack incoming-webhook URL (optional)   [WHODATJET_SLACK_WEBHOOK_URL]
+  --api-bind ADDR        API listen address (default 0.0.0.0)          [WHODATJET_API_BIND]
+  --admin-bind ADDR      admin console listen address (default 127.0.0.1) [WHODATJET_ADMIN_BIND]
+  --admin-prefix PATH    URL path of the admin console (default /admin)  [WHODATJET_ADMIN_PREFIX]
   --ref REF              git branch/tag of WhoDatJet to install        [WHODATJET_REF]  default: main
 USAGE
 }
@@ -104,6 +107,9 @@ while [ $# -gt 0 ]; do
     --tailscale-authkey-file) need "$@"; secret_from_file WHODATJET_TAILSCALE_AUTHKEY "$1" "$2"; shift ;;
     --slack-webhook-file) need "$@"; secret_from_file WHODATJET_SLACK_WEBHOOK_URL "$1" "$2"; shift ;;
     --tailscale-hostname) need "$@"; WHODATJET_TS_HOSTNAME="$2"; shift ;;
+    --api-bind) need "$@"; WHODATJET_API_BIND="$2"; shift ;;
+    --admin-bind) need "$@"; WHODATJET_ADMIN_BIND="$2"; shift ;;
+    --admin-prefix) WHODATJET_ADMIN_PREFIX="${2-}"; shift ;;
     --ref) need "$@"; REF="$2"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -214,7 +220,7 @@ if [ -n "${WHODATJET_S3_BUCKET:-}" ]; then
   [ -n "${WHODATJET_S3_ACCESS_KEY_ID:-}" ] && [ -n "${WHODATJET_S3_SECRET_ACCESS_KEY:-}" ] \
     || die "the S3 access key id and secret are required"
 fi
-say "Access: WhoDatJet is published on your tailnet (API https://<host>/, admin https://<host>:8443/)"
+say "Access: the container joins your tailnet; publish the web pages with NPMplus (API port 8000, admin port 8001)"
 ask WHODATJET_TAILSCALE_AUTHKEY "Tailscale auth key (blank to enroll by hand later; input hidden)" "" secret
 ask WHODATJET_SLACK_WEBHOOK_URL "Slack webhook URL for alerts (blank to set it later in the console)" "" secret
 
@@ -275,7 +281,7 @@ umask 077
   echo "WHODATJET_TS_HOSTNAME=$(printf %q "${WHODATJET_TS_HOSTNAME:-$WDJ_HOSTNAME}")"
   for v in WHODATJET_S3_BUCKET WHODATJET_S3_ENDPOINT_URL WHODATJET_S3_REGION WHODATJET_S3_PREFIX \
            WHODATJET_S3_ADDRESSING_STYLE WHODATJET_S3_ACCESS_KEY_ID WHODATJET_S3_SECRET_ACCESS_KEY \
-           WHODATJET_TAILSCALE_AUTHKEY WHODATJET_SLACK_WEBHOOK_URL; do
+           WHODATJET_TAILSCALE_AUTHKEY WHODATJET_SLACK_WEBHOOK_URL WHODATJET_API_BIND WHODATJET_ADMIN_BIND WHODATJET_ADMIN_PREFIX; do
     [ -z "${!v:-}" ] || echo "$v=$(printf %q "${!v}")"
   done
 } > "$ANS"
@@ -300,7 +306,8 @@ say "WhoDatJet is installed in container $WDJ_CTID"
 cat <<MSG
   Shell:     pct enter $WDJ_CTID
   Services:  whodatjet-api, whodatjet-admin, whodatjet-ingest.timer, whodatjet-backup.timer, whodatjet-watchdog.timer
-  Admin:     https://$WDJ_HOSTNAME.<your-tailnet>.ts.net:8443  (admin / admin; you must change the password at first login)
+  Web pages: add NPMplus proxy hosts to http://<container-ip>:8000 (API) and :8001 (admin; needs --admin-bind 0.0.0.0)
+             admin sign-in is admin / admin; you must change the password at first login
   Resize:    bash install.sh --resize $WDJ_CTID --profile low|medium|high
   Update:    pct exec $WDJ_CTID -- bash -c 'curl -fsSL $GUEST_URL | bash'
 MSG

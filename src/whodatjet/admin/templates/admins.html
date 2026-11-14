@@ -3,9 +3,9 @@
 <div class="card"><div class="scroll"><table><tr><th>User</th><th>Created</th><th>Last login</th><th>State</th><th></th></tr>
 {% for u in users %}<tr><td>{{ u.username }}</td><td>{{ u.created_at[:10] }} <span class="k">{{ u.created_by }}</span></td><td>{{ u.last_login_at or '–' }}</td>
 <td>{% if u.disabled_at %}<span class="pill">disabled</span>{% elif u.must_change_password %}<span class="pill warn">password change pending</span>{% else %}<span class="pill">active</span>{% endif %}</td>
-<td><form method="post" action="/admins/{{ u.username }}/{{ 'enable' if u.disabled_at else 'disable' }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">{{ 'Enable' if u.disabled_at else 'Disable' }}</button></form></td></tr>{% endfor %}</table></div></div>
+<td><form method="post" action="{{ base }}/admins/{{ u.username }}/{{ 'enable' if u.disabled_at else 'disable' }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">{{ 'Enable' if u.disabled_at else 'Disable' }}</button></form></td></tr>{% endfor %}</table></div></div>
 <div class="card"><h2>Add an admin</h2><p class="k">They sign in with the temporary password and must change it at first login.</p>
-<form method="post" action="/admins/create"><input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="{{ base }}/admins/create"><input type="hidden" name="csrf" value="{{ csrf }}">
 <label for="un">Username</label><input id="un" name="username" required>
 <label for="tp">Temporary password (at least 8 characters)</label><input id="tp" name="password" type="password" autocomplete="new-password" required>
 <p><button>Add admin</button></p></form></div>{% endblock %}

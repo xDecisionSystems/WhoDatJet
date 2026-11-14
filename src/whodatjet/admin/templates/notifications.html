@@ -1,7 +1,7 @@
 {% extends "base.html" %}{% block title %}Notifications · WhoDatJet{% endblock %}
 {% block body %}<h1>Notifications</h1>
 {% if message %}<p class="okmsg">{{ message }}</p>{% endif %}{% if error %}<p class="err">{{ error }}</p>{% endif %}
-<div class="card"><form method="post" action="/notifications"><input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="card"><form method="post" action="{{ base }}/notifications"><input type="hidden" name="csrf" value="{{ csrf }}">
 <h2>Slack incoming webhook</h2>
 <p>Current: {% if webhook %}<code>{{ webhook }}</code>{% else %}<span class="k">none</span>{% endif %}</p>
 <label for="w">New webhook URL (leave blank to keep the current one)</label><input id="w" name="webhook" placeholder="https://hooks.slack.com/services/…" autocomplete="off">
@@ -9,4 +9,4 @@
 <h2>Events</h2>{% for e in events %}<label class="check"><input type="checkbox" name="event_{{ e.key }}" value="1" {{ 'checked' if e.on }}> {{ e.title }}</label>{% endfor %}
 <label for="r">Repeat interval while a condition persists (hours)</label><input id="r" name="repeat" value="{{ repeat }}">
 <p><button>Save</button></p></form></div>
-<div class="card"><form method="post" action="/notifications/test"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Send test message</button></form></div>{% endblock %}
+<div class="card"><form method="post" action="{{ base }}/notifications/test"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">Send test message</button></form></div>{% endblock %}

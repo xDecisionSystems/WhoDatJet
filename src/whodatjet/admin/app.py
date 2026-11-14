@@ -46,10 +46,15 @@ async def read_form(request: Request) -> dict[str, str]:
 
 
 def create_app(cfg: Config, *, transport: httpx.BaseTransport | None = None,
-               announce: Callable[[str, str], None] | None = None) -> FastAPI:
-    """`transport` and `announce` are injection points for tests (Slack HTTP and fire-and-forget alerts)."""
+               announce: Callable[[str, str], None] | None = None, prefix: str = "") -> FastAPI:
+    """`transport` and `announce` are injection points for tests (Slack HTTP and fire-and-forget alerts).
+
+    `prefix` (e.g. "/admin") serves the whole console under a path, for a reverse proxy that publishes it as
+    https://host/admin. All links, redirects and cookie paths include it; the proxy forwards the path unchanged."""
+    prefix = "/" + prefix.strip("/") if prefix.strip("/") else ""
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(HERE / "templates"), autoescape=True)
-    app = FastAPI(title="WhoDatJet admin", docs_url=None, redoc_url=None, openapi_url=None)
+    inner = FastAPI(title="WhoDatJet admin", docs_url=None, redoc_url=None, openapi_url=None)
+    app = inner
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
 
     @contextmanager
@@ -92,17 +97,20 @@ def create_app(cfg: Config, *, transport: httpx.BaseTransport | None = None,
     def render(request: Request, name: str, sess: accounts.Session | None = None, status_code: int = 200,
                **ctx) -> HTMLResponse:
         tmpl = env.get_template(name)
-        page = {"user": sess.username if sess else None, "version": __version__, "path": request.url.path,
+        page = {"user": sess.username if sess else None, "version": __version__, "base": prefix,
+                "path": request.url.path.removeprefix(prefix) or "/",
                 "csrf": accounts.csrf_token(sess.token) if sess else "", **ctx}
         return HTMLResponse(tmpl.render(**page), status_code=status_code)
 
     def redirect(location: str, *, set_cookie: tuple[str, str] | None = None, clear: str | None = None
                  ) -> RedirectResponse:
-        r = RedirectResponse(location, status_code=303)
+        r = RedirectResponse(prefix + location if location.startswith("/") else location, status_code=303)
         if set_cookie:
-            r.set_cookie(set_cookie[0], set_cookie[1], httponly=True, secure=True, samesite="strict", path="/")
+            r.set_cookie(set_cookie[0], set_cookie[1], httponly=True, secure=True, samesite="strict",
+                         path=prefix or "/")
         if clear:
-            r.delete_cookie(clear, path="/", secure=True, httponly=True, samesite="strict")
+            r.delete_cookie(clear, path=prefix + "/login" if clear == LOGIN_COOKIE else (prefix or "/"),
+                            secure=True, httponly=True, samesite="strict")
         return r
 
     class Gate:
@@ -129,8 +137,8 @@ def create_app(cfg: Config, *, transport: httpx.BaseTransport | None = None,
     def login_page(request: Request):
         token = secrets.token_urlsafe(24)
         r = render(request, "login.html", csrf=token, error=None)
-        r.set_cookie(LOGIN_COOKIE, token, httponly=True, secure=True, samesite="strict", path="/login",
-                     max_age=1800)
+        r.set_cookie(LOGIN_COOKIE, token, httponly=True, secure=True, samesite="strict",
+                     path=prefix + "/login", max_age=1800)
         return r
 
     @app.post("/login")
@@ -145,8 +153,8 @@ def create_app(cfg: Config, *, transport: httpx.BaseTransport | None = None,
                 token = secrets.token_urlsafe(24)
                 resp = render(request, "login.html", csrf=token, status_code=401,
                               error="Invalid credentials, or the account is temporarily locked.")
-                resp.set_cookie(LOGIN_COOKIE, token, httponly=True, secure=True, samesite="strict", path="/login",
-                                max_age=1800)
+                resp.set_cookie(LOGIN_COOKIE, token, httponly=True, secure=True, samesite="strict",
+                                path=prefix + "/login", max_age=1800)
                 return resp
             session_token = accounts.new_session(conn, result.user_id or 0)
         return redirect("/", set_cookie=(COOKIE, session_token), clear=LOGIN_COOKIE)
@@ -205,8 +213,7 @@ def create_app(cfg: Config, *, transport: httpx.BaseTransport | None = None,
             default_pw = conn.execute("SELECT 1 FROM admin_user WHERE username = 'admin' AND must_change_password = 1 "
                                       "AND disabled_at IS NULL").fetchone() is not None
             return render(request, "dashboard.html", sess, s=s, health=health, m=m, alerts=alerts.active(conn),
-                          default_pw=default_pw, disk_days=status.disk_days_remaining(cfg),
-                          rate_per_min=round(m["r"] / 1440, 2))
+                          default_pw=default_pw, disk_days=status.disk_days_remaining(cfg))
 
     # ------------------------------------------------------------------ API keys
 
@@ -372,11 +379,11 @@ def create_app(cfg: Config, *, transport: httpx.BaseTransport | None = None,
     def services_yaml(request: Request) -> str:
         admin_url = os.environ.get("WHODATJET_ADMIN_URL") or ""
         api_url = os.environ.get("WHODATJET_API_URL") or ""
-        host = (request.headers.get("host") or "whodatjet.<tailnet>.ts.net").strip()
+        host = (request.headers.get("host") or "whodatjet.example.org").strip()
         if not admin_url:
-            admin_url = f"https://{host}"
+            admin_url = f"https://{host}{prefix}"
         if not api_url:
-            api_url = "https://" + (urlparse(admin_url).hostname or "whodatjet.<tailnet>.ts.net")
+            api_url = f"https://{host}" if prefix else "https://" + (urlparse(admin_url).hostname or host)
         return f"""- Research:
     - WhoDatJet:
         icon: mdi-airplane
@@ -465,13 +472,17 @@ def create_app(cfg: Config, *, transport: httpx.BaseTransport | None = None,
                                 (page * 100,)).fetchall()
             return render(request, "audit.html", g.session, rows=rows[:100], page=page, more=len(rows) > 100)
 
-    return app
+    if not prefix:
+        return inner
+    outer = FastAPI(title="WhoDatJet admin", docs_url=None, redoc_url=None, openapi_url=None)
+    outer.mount(prefix, inner)
+    return outer
 
 
 def create_app_from_env() -> FastAPI:
     env_file = os.environ.get("WHODATJET_ENV_FILE")
     if env_file:
         load_env_file(Path(env_file))
-    return create_app(load_config())
+    return create_app(load_config(), prefix=os.environ.get("WHODATJET_ADMIN_PREFIX", ""))
 
 
