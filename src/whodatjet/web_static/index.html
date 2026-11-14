@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhoDatJet · FAA aircraft registry</title>
+<meta name="description" content="Look up any US aircraft by its N-number, as registered on any date.">
+<link rel="stylesheet" href="/ui/style.css">
+<script src="/ui/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">✈</span> WhoDatJet</div>
+  <nav><a href="/docs">API docs</a><a href="/admin/">Admin</a></nav>
+</header>
+<main class="layout">
+  <section class="panel search" aria-labelledby="search-title">
+    <h1 id="search-title">Look up an aircraft</h1>
+    <p class="hint">Enter an FAA N-number (the tail number) to see the aircraft as it was registered on a date.</p>
+    <form id="search-form" autocomplete="off" novalidate>
+      <label for="q">N-number</label>
+      <input id="q" name="q" type="search" placeholder="N172SP" maxlength="8" spellcheck="false"
+             autocapitalize="characters" required>
+      <label for="d">As of date <span class="opt">(optional)</span></label>
+      <input id="d" name="d" type="date">
+      <div class="actions">
+        <button type="submit" id="go">Search</button>
+        <button type="button" id="again" class="secondary">Show a random aircraft</button>
+      </div>
+      <p id="form-error" class="error" role="alert" hidden></p>
+    </form>
+    <p class="fine">Shows aircraft details only. Owner names and addresses are available to API-key holders.</p>
+  </section>
+  <section class="panel result" aria-live="polite" aria-busy="false">
+    <div id="result-label" class="label">Random aircraft</div>
+    <div id="card" class="card" hidden>
+      <div class="nnum" id="nnum"></div>
+      <h2 id="headline"></h2>
+      <dl id="facts" class="facts"></dl>
+      <p id="meta" class="meta"></p>
+    </div>
+    <div id="notfound" class="card notfound" hidden>
+      <div class="nnum" id="nf-nnum"></div>
+      <h2>Not found</h2>
+      <p id="nf-message"></p>
+      <p id="nf-coverage" class="meta"></p>
+    </div>
+    <div id="loading" class="loading">Loading…</div>
+  </section>
+</main>
+<footer class="foot">Data from the FAA Releasable Aircraft Registration Database, retained daily.</footer>
+</body>
+</html>

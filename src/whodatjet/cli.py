@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"rebuild failed (live database unchanged): {exc}", file=sys.stderr)
             return 1
         print(f"rebuilt {cfg.registry_db_path} from {len(results)} archive(s); "
-              "restart API workers so they reopen the database")
+              "the API serves the new data without a restart")
         return 0
 
     if args.command == "coverage":

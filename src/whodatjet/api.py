@@ -21,7 +21,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from whodatjet import __version__, coverage, db, query
+from whodatjet import __version__, coverage, db, query, web
 from whodatjet import status as status_mod
 from whodatjet.auth import KeyCache, RateLimiter, UsageRecorder
 from whodatjet.config import Config, load_config, load_env_file
@@ -139,6 +139,8 @@ def create_app(cfg: Config, *, today: Callable[[], date] | None = None, worker_i
 
     def registry() -> sqlite3.Connection:
         return conns.get(cfg.registry_db_path)
+
+    web.register(app, cfg, registry, today_fn)
 
     @app.get("/healthz")
     def healthz(strict: bool = False):

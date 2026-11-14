@@ -225,3 +225,32 @@ def test_rebuild_replaces_live_db_and_keeps_backup(tmp_path):
     assert r.execute("SELECT count(*) FROM snapshot").fetchone()[0] == 1
     assert r.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert not list(tmp_path.glob("whodatjet.db.rebuild-*"))
+
+
+def test_rebuild_succeeds_while_readers_are_connected(tmp_path):
+    """Regression (found under load on the live container): the API always has the database open, and the old
+    swap (rename + journal-mode change) failed with 'database is locked'."""
+    from whodatjet import db
+    store = FilesystemArchiveStore(tmp_path / "archives")
+    a = Archive()
+    p, sha = a.write(tmp_path / "a.zip")
+    store.put_verified(daily_key(date(2026, 11, 11), hashlib.sha256(a.zip_bytes()).hexdigest()), p, sha,
+                       {"source-date": D1, "source-date-basis": "http_last_modified",
+                        "downloaded-at": f"{D1}T23:59:00-06:00"})
+    live = tmp_path / "whodatjet.db"
+    c = db.connect_writer(live)
+    db.migrate(c, db.load_migrations("registry"))
+    c.close()
+    idle = db.connect_reader(live, mmap_size=1 << 28)            # an API worker's idle connection
+    busy = db.connect_reader(live)
+    busy.execute("BEGIN")                                          # a request in the middle of reading
+    assert busy.execute("SELECT count(*) FROM snapshot").fetchone()[0] == 0
+    rebuild(live, store, tmp_path / "staging", tmp_path / "backups")
+    assert busy.execute("SELECT count(*) FROM snapshot").fetchone()[0] == 0   # its snapshot is unchanged
+    busy.rollback()
+    assert busy.execute("SELECT count(*) FROM snapshot").fetchone()[0] == 1   # new data, same connection
+    assert idle.execute("SELECT count(*) FROM snapshot").fetchone()[0] == 1   # no reopen needed
+    assert idle.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert idle.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert len(list((tmp_path / "backups").glob("whodatjet.db.pre-rebuild-*"))) == 1
+    assert not list(tmp_path.glob("whodatjet.db.rebuild-*"))
