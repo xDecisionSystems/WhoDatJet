@@ -87,8 +87,16 @@ if tailscale status >/dev/null 2>&1; then
   TS_UP=1
   # Publish the API (HTTPS 443) and the admin console (HTTPS 8443) on the tailnet; the services themselves
   # listen on 127.0.0.1, so nothing depends on the tailscale0 address existing at boot.
-  tailscale serve --bg http://127.0.0.1:8000 >/dev/null || true
-  tailscale serve --bg --https=8443 http://127.0.0.1:8001 >/dev/null || true
+  # `tailscale serve` blocks waiting for approval when Serve/HTTPS is not enabled on the tailnet, so bound it.
+  serve_out="$(timeout 20 tailscale serve --bg http://127.0.0.1:8000 2>&1 </dev/null)" || serve_failed=1
+  [ -n "${serve_failed:-}" ] || timeout 20 tailscale serve --bg --https=8443 http://127.0.0.1:8001 >/dev/null 2>&1 </dev/null \
+    || serve_failed=1
+  if [ -n "${serve_failed:-}" ]; then
+    echo "WARNING: could not publish the web pages with 'tailscale serve'."
+    echo "$serve_out" | grep -E 'https://' | head -2
+    echo "Enable Serve (and HTTPS certificates) for the tailnet in the Tailscale admin console, then run:"
+    echo "  tailscale serve --bg http://127.0.0.1:8000 && tailscale serve --bg --https=8443 http://127.0.0.1:8001"
+  fi
   echo "Joined the tailnet as $(tailscale status --self --json 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || hostname)"
 else
   echo "Tailscale is installed but not connected. Run: tailscale up --hostname ${WHODATJET_TS_HOSTNAME:-$(hostname)} --accept-dns=false"
