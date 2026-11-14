@@ -213,7 +213,11 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn.run("whodatjet.admin.app:create_app_from_env", factory=True,
                     host=os.environ.get("WHODATJET_ADMIN_HOST", "127.0.0.1"),
                     port=int(os.environ.get("WHODATJET_ADMIN_PORT", "8001")), workers=1,
-                    proxy_headers=False, server_header=False, log_level="info")
+                    # Trust X-Forwarded-* only from the reverse proxy (NPMplus), so redirects keep https and the
+                    # audit log records the real client address.
+                    proxy_headers=True,
+                    forwarded_allow_ips=os.environ.get("WHODATJET_FORWARDED_ALLOW_IPS", "127.0.0.1"),
+                    server_header=False, log_level="info")
         return 0
 
     if args.command == "watchdog":
