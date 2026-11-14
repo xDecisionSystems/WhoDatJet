@@ -72,6 +72,29 @@ id whodatjet >/dev/null 2>&1 || useradd --system --home-dir "$DATA" --shell /usr
 install -d -o whodatjet -g whodatjet -m 0750 "$DATA" "$DATA"/{archives,staging,logs,backups}
 install -d -m 0755 "$APP" "$APP/releases" /etc/whodatjet
 
+say "Tailscale"
+if ! command -v tailscale >/dev/null; then
+  echo "Installing Tailscale"
+  curl -fsSL https://tailscale.com/install.sh | sh >/dev/null
+fi
+systemctl enable --now tailscaled >/dev/null 2>&1 || true
+if [ -n "${WHODATJET_TAILSCALE_AUTHKEY:-}" ] && ! tailscale status >/dev/null 2>&1; then
+  tailscale up --authkey "$WHODATJET_TAILSCALE_AUTHKEY" --hostname "${WHODATJET_TS_HOSTNAME:-$(hostname)}" \
+    --accept-dns=false
+fi
+TS_UP=0
+if tailscale status >/dev/null 2>&1; then
+  TS_UP=1
+  # Publish the API (HTTPS 443) and the admin console (HTTPS 8443) on the tailnet; the services themselves
+  # listen on 127.0.0.1, so nothing depends on the tailscale0 address existing at boot.
+  tailscale serve --bg http://127.0.0.1:8000 >/dev/null || true
+  tailscale serve --bg --https=8443 http://127.0.0.1:8001 >/dev/null || true
+  echo "Joined the tailnet as $(tailscale status --self --json 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || hostname)"
+else
+  echo "Tailscale is installed but not connected. Run: tailscale up --hostname ${WHODATJET_TS_HOSTNAME:-$(hostname)} --accept-dns=false"
+  echo "  then: tailscale serve --bg http://127.0.0.1:8000 && tailscale serve --bg --https=8443 http://127.0.0.1:8001"
+fi
+
 say "Fetching WhoDatJet ($REF)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$tmp/src"
@@ -171,24 +194,9 @@ if [ ! -e "$DATA/.first-key-issued" ]; then
   run "$APP/current/.venv/bin/whodatjet" keys create first-key --owner installer && touch "$DATA/.first-key-issued"
 fi
 
-if ! command -v tailscale >/dev/null; then
-  say "Installing Tailscale"
-  curl -fsSL https://tailscale.com/install.sh | sh >/dev/null
-fi
-if [ -n "${WHODATJET_TAILSCALE_AUTHKEY:-}" ]; then
-  tailscale up --authkey "$WHODATJET_TAILSCALE_AUTHKEY" --hostname "${WHODATJET_TS_HOSTNAME:-$(hostname)}"
-fi
-if tailscale status >/dev/null 2>&1; then
-  tailscale serve --bg http://127.0.0.1:8000 >/dev/null || true
-  tailscale serve --bg --https=8443 http://127.0.0.1:8001 >/dev/null || true
-else
-  echo "Tailscale is installed but not connected. Run: tailscale up && tailscale serve --bg http://127.0.0.1:8000 \\"
-  echo "  && tailscale serve --bg --https=8443 http://127.0.0.1:8001"
-fi
-
 say "Done"
 systemctl --no-pager --lines=0 status whodatjet-api.service | head -4 || true
 echo "Check:    $APP/current/.venv/bin/whodatjet status   (as root, with: set -a; . /etc/whodatjet.env; . $STORE_ENV; set +a)"
-echo "Admin console: https://<this-host>.<tailnet>.ts.net:8443  (sign in as admin / admin; you must change the password at first login)"
+[ "$TS_UP" = 1 ] && echo "Admin console: https://$(tailscale status --self --json | python3 -c 'import sys,json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))'):8443  (admin / admin; you must change the password at first login)" || echo "Admin console: https://<this-host>.<tailnet>.ts.net:8443 once Tailscale is connected (admin / admin; change the password at first login)"
 echo "Logs:     journalctl -u whodatjet-api -u whodatjet-ingest"
 echo "Update:   re-run the install command."
