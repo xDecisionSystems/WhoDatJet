@@ -60,7 +60,7 @@ whodatjet keys create <name>       # issue an API key (shown once); also on the 
 
 Resize later from the Proxmox host: `bash install.sh --resize <ctid> --profile low|medium|high`.
 
-More: [deployment and operations](docs/deployment.md), [Homepage monitoring](docs/homepage.md).
+More: [deployment and operations](docs/deployment.md), [Homepage monitoring](docs/homepage.md), [measured performance](docs/performance.md).
 
 ## Develop
 
