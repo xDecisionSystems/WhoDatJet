@@ -16,5 +16,31 @@ Reading it:
 - A lookup costs 0.14 ms in SQLite (indexed); the rest is Python, JSON and the network stack, so more vCPUs raise throughput almost linearly.
 - Still to measure: the `low` and `high` profiles, a run during an import, and the path through NPMplus.
 
+## Other profiles (disposable container, same real data, same host, load from the VLAN without Tailscale)
+
+| Profile | Peak throughput | p95 at that load | Sheds load (`503`) from about |
+|---|---|---|---|
+| `low` (1 vCPU, 2 workers) | ~520 req/s at 12 clients | 31 ms | 16-24 in flight (21% `503` at 24) |
+| `medium` (2 vCPU, 4 workers) | ~1,000 req/s at 24 clients | 60 ms | well beyond 24 |
+| `high` (4 vCPU, 8 workers) | ~1,430 req/s at 20 clients | 27 ms | beyond 150 clients (7 `503` in 6,700 requests) |
+
+The `high` figure is limited by the single test machine (6 cores, Python clients), so it is a lower bound. Without the Tailscale hop the same `medium` container does about 1,000 req/s instead of 750.
+
+## During an import
+A full `rebuild` (a complete import of the archive, the heaviest write the service does) running at the same time as 24 concurrent clients on `medium`: throughput fell about 13% (1,020 to 887 req/s in a 40 s run), p95 unchanged, `503` rate negligible (6 in 160,000 over a 240 s run). The import itself took about 3.4 minutes at full load. The API keeps serving from its own consistent snapshot of the database throughout.
+
+## Failure drills (live container, 2026-11-14)
+| Drill | Result |
+|---|---|
+| Forced ingest failure (bad FAA URL) | Run recorded as failed, `ingest_failed` alert sent, `/healthz?strict=true` 503; the next normal ingest cleared the alert (one "resolved" message) and the health check |
+| API stopped | One failed watchdog check raised nothing; the second raised "API unhealthy" (site returned 502); restart plus one watchdog run resolved it |
+| S3 unreachable during ingest | Download kept in `staging/`, `ingest_failed` and "archive store problem" alerts, API unaffected; after recovery the staged file was reconciled (already stored, so dropped) and both alerts resolved |
+
+## Bugs found by this testing
+- Multi-worker keep-alive stall of 44 ms per request (below).
+- `rebuild` failed with `database is locked` whenever the API had the database open (its swap renamed the file and changed the journal mode). It now copies the new database into the live file with SQLite's online backup, atomically, with no restart needed.
+- The watchdog checked the admin console at `/healthz` after it moved under `/admin`, raising a false alert.
+- The updater and the guest installer both failed to find `cosign` under `pct exec` and mis-reported it as a bad signature.
+
 ## Bug found by this test
 With 2 or more workers every keep-alive request after the first took about 44 ms (uvicorn's multi-worker listening socket lacked `TCP_NODELAY`, so Nagle's algorithm met the client's delayed ACK). Before the fix one client managed 19 req/s and the service topped out near 140 req/s; after it, 160 and 750. Fixed in `whodatjet.server`, with a regression test (`tests/test_server.py`).
