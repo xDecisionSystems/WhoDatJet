@@ -21,6 +21,9 @@
 # They travel into the container in a 0600 file which the guest installer reads and deletes.
 set -euo pipefail
 
+# A released installer carries its own version (stamped at build time); --version / WHODATJET_VERSION overrides.
+VERSION="${WHODATJET_VERSION:-@VERSION@}"
+case "$VERSION" in @*) VERSION="" ;; esac
 RAW="${WHODATJET_RAW_URL:-https://raw.githubusercontent.com/xDecisionSystems/WhoDatJet}"
 REF="${WHODATJET_REF:-main}"
 YES=0; DRY=0; RESIZE=""; PROFILE_ARG=""
@@ -69,6 +72,7 @@ Access and alerts:
   --api-bind ADDR        API listen address (default 0.0.0.0)          [WHODATJET_API_BIND]
   --admin-bind ADDR      admin console listen address (default 127.0.0.1) [WHODATJET_ADMIN_BIND]
   --admin-prefix PATH    URL path of the admin console (default /admin)  [WHODATJET_ADMIN_PREFIX]
+  --version vX.Y.Z       install this signed release (default: the release this installer belongs to)
   --ref REF              git branch/tag of WhoDatJet to install        [WHODATJET_REF]  default: main
 USAGE
 }
@@ -110,6 +114,7 @@ while [ $# -gt 0 ]; do
     --api-bind) need "$@"; WHODATJET_API_BIND="$2"; shift ;;
     --admin-bind) need "$@"; WHODATJET_ADMIN_BIND="$2"; shift ;;
     --admin-prefix) WHODATJET_ADMIN_PREFIX="${2-}"; shift ;;
+    --version) need "$@"; VERSION="$2"; shift ;;
     --ref) need "$@"; REF="$2"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
@@ -277,6 +282,7 @@ ANS="$(mktemp -d)/answers"
 umask 077
 {
   echo "WHODATJET_REF=$(printf %q "$REF")"
+  [ -z "$VERSION" ] || echo "WHODATJET_VERSION=$(printf %q "$VERSION")"
   echo "WHODATJET_PROFILE=$(printf %q "$WDJ_PROFILE")"
   echo "WHODATJET_TS_HOSTNAME=$(printf %q "${WHODATJET_TS_HOSTNAME:-$WDJ_HOSTNAME}")"
   for v in WHODATJET_S3_BUCKET WHODATJET_S3_ENDPOINT_URL WHODATJET_S3_REGION WHODATJET_S3_PREFIX \
@@ -290,7 +296,11 @@ trap cleanup EXIT
 run pct push "$WDJ_CTID" "$ANS" /root/.whodatjet-answers --perms 0600
 
 say "Downloading and installing WhoDatJet inside the container (this can take several minutes)"
-GUEST_URL="$RAW/$REF/deploy/install.sh"
+if [ -n "$VERSION" ]; then
+  GUEST_URL="https://github.com/xDecisionSystems/WhoDatJet/releases/download/$VERSION/guest-install.sh"
+else
+  GUEST_URL="$RAW/$REF/deploy/install.sh"
+fi
 run pct exec "$WDJ_CTID" -- bash -c '
   set -e
   export DEBIAN_FRONTEND=noninteractive
@@ -309,5 +319,5 @@ cat <<MSG
   Web pages: add NPMplus proxy hosts to http://<container-ip>:8000 (API) and :8001 (admin; needs --admin-bind 0.0.0.0)
              admin sign-in is admin / admin; you must change the password at first login
   Resize:    bash install.sh --resize $WDJ_CTID --profile low|medium|high
-  Update:    pct exec $WDJ_CTID -- bash -c 'curl -fsSL $GUEST_URL | bash'
+  Update:    pct exec $WDJ_CTID -- whodatjet-update        (--check, --rollback)
 MSG

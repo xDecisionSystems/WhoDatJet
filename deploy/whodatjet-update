@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# whodatjet-update: verified application update with automatic rollback.   Run as root:  sudo whodatjet-update
+#
+#   whodatjet-update                  update to the latest release
+#   whodatjet-update --version v1.2.3 install a specific release
+#   whodatjet-update --check          show the installed and the latest version, change nothing
+#   whodatjet-update --rollback       switch back to the previous release (code only; the database is untouched)
+#
+# Trust: a release's manifest.json (SHA-256 of every asset) is signed by GitHub Actions with Sigstore keyless
+# signing. This script verifies that signature with the pinned cosign binary, then checks the tarball against
+# the manifest, before anything is installed. If the new version is unhealthy after the switch it goes back to
+# the previous release by itself. Database migrations only add things, and a database backup is taken first.
+set -euo pipefail
+
+REPO="${WDJ_REPO:-xDecisionSystems/WhoDatJet}"
+APP="${WDJ_APP:-/opt/whodatjet}"
+DATA="${WDJ_DATA:-/var/lib/whodatjet}"
+ENV_FILE="${WDJ_ENV:-/etc/whodatjet.env}"
+STORE_ENV="${WDJ_STORE_ENV:-/etc/whodatjet/archive-store.env}"
+UNIT_DIR="${WDJ_UNIT_DIR:-/etc/systemd/system}"
+RELEASE_BASE="${WDJ_RELEASE_BASE:-https://github.com/$REPO/releases/download}"
+LATEST_URL="${WDJ_LATEST_URL:-https://github.com/$REPO/releases/latest}"
+HEALTH_API="${WDJ_HEALTH_API:-http://127.0.0.1:8000/healthz}"
+HEALTH_ADMIN="${WDJ_HEALTH_ADMIN:-}"   # e.g. http://127.0.0.1:8001/admin/healthz; empty = skip
+HEALTH_WAIT="${WDJ_HEALTH_WAIT:-60}"
+SYSTEMCTL="${WDJ_SYSTEMCTL:-systemctl}"
+COSIGN="${WDJ_COSIGN:-cosign}"
+UV="${WDJ_UV:-uv}"
+KEEP="${WDJ_KEEP_RELEASES:-3}"
+SERVICE_USER="${WDJ_SERVICE_USER:-whodatjet}"
+OIDC_ISSUER="https://token.actions.githubusercontent.com"
+SERVICES=(whodatjet-api whodatjet-admin)
+
+MODE=update; WANT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) WANT="${2:?--version needs a tag such as v1.2.3}"; shift ;;
+    --check) MODE=check ;;
+    --rollback) MODE=rollback ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+die() { echo "error: $*" >&2; exit 1; }
+say() { printf '==> %s\n' "$*"; }
+[ "${WDJ_NO_ROOT_CHECK:-}" = 1 ] || [ "$(id -u)" -eq 0 ] || die "run as root (sudo whodatjet-update)"
+
+# One update at a time.
+mkdir -p "$APP"
+exec 9>"$APP/.update.lock"
+flock -n 9 || die "another update is running"
+
+current_version() { [ -L "$APP/current" ] && basename "$(readlink -f "$APP/current")" || echo none; }
+
+as_service() {  # run a command as the service account with the service environment loaded
+  if [ "${WDJ_NO_ROOT_CHECK:-}" = 1 ]; then "$@"; return; fi
+  runuser -u "$SERVICE_USER" -- bash -c 'set -a; . "$0"; [ -r "$1" ] && . "$1"; set +a; shift 2; exec "$@"' \
+    "$ENV_FILE" "$STORE_ENV" "$@"
+}
+
+notify() {  # best effort; never fails the update
+  local detail="$1"
+  [ -x "$APP/current/.venv/bin/whodatjet" ] || return 0
+  as_service "$APP/current/.venv/bin/whodatjet" notify --event update_result --detail "$detail" >/dev/null 2>&1 || true
+}
+
+healthy() {
+  local url
+  for url in "$HEALTH_API" ${HEALTH_ADMIN:+"$HEALTH_ADMIN"}; do
+    curl -fsS -m 5 -o /dev/null "$url" 2>/dev/null || return 1
+  done
+}
+
+wait_healthy() {
+  local waited=0
+  while [ "$waited" -lt "$HEALTH_WAIT" ]; do
+    healthy && return 0
+    sleep 2; waited=$((waited + 2))
+  done
+  return 1
+}
+
+restart_services() { "$SYSTEMCTL" restart "${SERVICES[@]}"; }
+
+switch_to() {  # switch_to <release dir>
+  ln -sfn "$1" "$APP/current.new" && mv -T "$APP/current.new" "$APP/current"
+}
+
+latest_tag() {
+  local url
+  url="$(curl -fsSL -m 30 -o /dev/null -w '%{url_effective}' "$LATEST_URL")" || die "cannot reach $LATEST_URL"
+  case "$url" in */tag/*) echo "${url##*/}" ;; *) die "no published release found" ;; esac
+}
+
+# ------------------------------------------------------------------------------------------------- rollback
+if [ "$MODE" = rollback ]; then
+  [ -L "$APP/previous" ] || die "no previous release recorded"
+  prev="$(readlink -f "$APP/previous")"; cur="$(readlink -f "$APP/current")"
+  [ -d "$prev" ] || die "previous release $prev is gone"
+  say "Rolling back $(basename "$cur") -> $(basename "$prev") (code only)"
+  switch_to "$prev"; ln -sfn "$cur" "$APP/previous"
+  restart_services
+  if wait_healthy; then
+    notify "rolled back from $(basename "$cur") to $(basename "$prev")"
+    say "Rolled back; healthy"; exit 0
+  fi
+  notify "rollback to $(basename "$prev") finished but the service is not healthy"
+  die "rolled back but the service is not healthy; check: journalctl -u whodatjet-api -u whodatjet-admin"
+fi
+
+# ------------------------------------------------------------------------------------------------- check / update
+TARGET="${WANT:-$(latest_tag)}"
+CUR="$(current_version)"
+echo "installed: $CUR"
+echo "target:    $TARGET"
+[ "$MODE" = check ] && exit 0
+[[ "$TARGET" =~ ^v[0-9]+(\.[0-9]+){2}([-+][0-9A-Za-z.-]+)?$ ]] || die "unexpected version string: $TARGET"
+if [ "$TARGET" = "$CUR" ] && [ -z "$WANT" ]; then say "already up to date"; exit 0; fi
+[ "$TARGET" != "$CUR" ] || die "$TARGET is already installed"
+
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+base="$RELEASE_BASE/$TARGET"
+
+say "Downloading and verifying $TARGET"
+curl -fsSL -m 120 -o "$work/manifest.json" "$base/manifest.json" || die "cannot download the manifest for $TARGET"
+curl -fsSL -m 120 -o "$work/manifest.json.sigstore.json" "$base/manifest.json.sigstore.json" \
+  || die "cannot download the manifest signature for $TARGET"
+"$COSIGN" verify-blob --bundle "$work/manifest.json.sigstore.json" \
+  --certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TARGET" \
+  --certificate-oidc-issuer "$OIDC_ISSUER" "$work/manifest.json" >/dev/null 2>"$work/cosign.err" \
+  || { cat "$work/cosign.err" >&2; die "the manifest signature is NOT valid; nothing was installed"; }
+
+PY="${WDJ_PYTHON:-}"
+[ -n "$PY" ] || { [ -x "$APP/current/.venv/bin/python" ] && PY="$APP/current/.venv/bin/python" || PY=python3; }
+tarball="whodatjet-$TARGET.tar.gz"
+read -r m_version m_sha m_size < <("$PY" - "$work/manifest.json" "$tarball" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+a = m.get("assets", {}).get(sys.argv[2], {})
+print(m.get("version", ""), a.get("sha256", ""), a.get("size", ""))
+PY
+)
+[ "$m_version" = "$TARGET" ] || die "the signed manifest is for '$m_version', not $TARGET"
+[ -n "$m_sha" ] || die "the signed manifest does not list $tarball"
+curl -fsSL -m 600 -o "$work/$tarball" "$base/$tarball" || die "cannot download $tarball"
+[ "$(sha256sum "$work/$tarball" | cut -d' ' -f1)" = "$m_sha" ] || die "$tarball does not match the signed manifest; nothing was installed"
+
+say "Installing $TARGET"
+rel="$APP/releases/$TARGET"
+if [ ! -d "$rel" ]; then
+  mkdir -p "$APP/releases" "$work/x"
+  tar -xzf "$work/$tarball" -C "$work/x"
+  mv "$work/x/whodatjet-$TARGET" "$rel.partial"
+  (cd "$rel.partial" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null) \
+    || { rm -rf "$rel.partial"; die "dependency install failed; nothing was changed"; }
+  chmod -R a+rX "$rel.partial"
+  mv "$rel.partial" "$rel"
+fi
+
+say "Backing up the databases"
+as_service "$APP/current/.venv/bin/whodatjet" backup --keep 14 >/dev/null 2>&1 \
+  || echo "warning: the pre-update backup did not complete" >&2
+
+prev="$(readlink -f "$APP/current" 2>/dev/null || true)"
+say "Switching to $TARGET"
+switch_to "$rel"
+[ -z "$prev" ] || ln -sfn "$prev" "$APP/previous"
+
+fail_and_rollback() {
+  echo "error: $1" >&2
+  if [ -n "$prev" ] && [ -d "$prev" ]; then
+    say "Rolling back to $(basename "$prev")"
+    switch_to "$prev"; ln -sfn "$rel" "$APP/previous"
+    restart_services || true
+    if wait_healthy; then notify "update to $TARGET failed ($1); rolled back to $(basename "$prev")"
+    else notify "update to $TARGET failed ($1) and the rollback to $(basename "$prev") is not healthy either"; fi
+  else
+    notify "update to $TARGET failed ($1) and there is no previous release to roll back to"
+  fi
+  exit 1
+}
+
+# Units can change between releases; install them from the new release.
+if [ -d "$rel/deploy/systemd" ]; then
+  for f in "$rel"/deploy/systemd/*.service "$rel"/deploy/systemd/*.timer; do
+    [ -e "$f" ] || continue
+    cmp -s "$f" "$UNIT_DIR/$(basename "$f")" || install -m 0644 "$f" "$UNIT_DIR/$(basename "$f")"
+  done
+  "$SYSTEMCTL" daemon-reload
+fi
+[ ! -f "$rel/deploy/whodatjet-update" ] || [ "${WDJ_SKIP_SELF_UPDATE:-}" = 1 ] \
+  || install -m 0755 "$rel/deploy/whodatjet-update" "${WDJ_SELF:-/usr/local/bin/whodatjet-update}"
+
+as_service "$APP/current/.venv/bin/whodatjet" migrate >/dev/null || fail_and_rollback "database migration failed"
+restart_services || fail_and_rollback "services failed to restart"
+wait_healthy || fail_and_rollback "health check failed after the update"
+
+# Keep the newest releases (current and previous are always kept).
+keep_cur="$(readlink -f "$APP/current")"; keep_prev="$(readlink -f "$APP/previous" 2>/dev/null || true)"
+ls -1dt "$APP"/releases/*/ 2>/dev/null | sed 's#/$##' | tail -n +"$((KEEP + 1))" | while read -r d; do
+  [ "$d" = "$keep_cur" ] || [ "$d" = "$keep_prev" ] || rm -rf "$d"
+done
+
+notify "updated from $(basename "${prev:-none}") to $TARGET"
+say "Updated to $TARGET; healthy"

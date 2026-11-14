@@ -561,3 +561,15 @@ def test_prefix_monitoring_yaml_uses_site_urls(pclient):
     r = post(pclient, "/admin/monitoring/issue", csrf=csrf_from(pclient, "/admin/monitoring"))
     assert "href: https://site.test/admin" in r.text
     assert "siteMonitor: https://site.test/healthz?strict=true" in r.text
+
+
+def test_one_shot_announce_is_not_deduplicated_and_honors_toggle(hooked, slack):
+    assert alerts.announce(hooked.admin_db_path, "update_result", "updated v1 to v2", transport=slack.transport,
+                           attempts=1)
+    assert alerts.announce(hooked.admin_db_path, "update_result", "updated v2 to v3", transport=slack.transport,
+                           attempts=1)
+    assert len(slack.posts) == 2                                         # both sent: no repeat suppression
+    assert not alerts.active(admin_conn(hooked))                          # and nothing left "active"
+    alerts.set_setting(admin_conn(hooked), "event.update_result", "0", "t")
+    assert alerts.announce(hooked.admin_db_path, "update_result", "again", transport=slack.transport, attempts=1)
+    assert len(slack.posts) == 2                                         # switched off: logged only

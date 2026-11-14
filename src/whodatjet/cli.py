@@ -118,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
                                  if args.unit else "")
         if args.event == "test":
             return 0 if notify.send(args.event, detail, admin_db=cfg.admin_db_path) else 1
+        if args.event in alerts.ONE_SHOT:
+            return 0 if alerts.announce(cfg.admin_db_path, args.event, detail) else 1
         key = f"unit_failed:{args.unit}" if args.unit else args.event
         alerts.fire(cfg.admin_db_path, key, args.event, detail)
         return 0

@@ -58,6 +58,27 @@ def repeat_hours(conn: sqlite3.Connection) -> float:
         return float(DEFAULT_REPEAT_HOURS)
 
 
+ONE_SHOT = {"update_result", "key_activity"}
+
+
+def announce(admin_db: Path, event: str, detail: str, *, transport: httpx.BaseTransport | None = None,
+             attempts: int = 3, backoff_s: float = 2.0) -> bool:
+    """One-off message for an event that is not a lasting condition (no de-duplication, no resolved message).
+    Honors the event's on/off setting; always logged. Returns True if posted or nothing needed posting."""
+    conn = _open(admin_db)
+    enabled = True
+    if conn is not None:
+        try:
+            enabled = event_enabled(conn, event)
+        finally:
+            conn.close()
+    if not enabled:
+        notify.log.info("%s notification is switched off: %s", event, detail)
+        return True
+    return notify.send(event, detail, admin_db=admin_db, transport=transport, attempts=attempts,
+                       backoff_s=backoff_s)
+
+
 def active(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM alert_state WHERE resolved_at IS NULL ORDER BY first_fired_at").fetchall()
 

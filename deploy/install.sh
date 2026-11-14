@@ -26,6 +26,17 @@ if [ -n "${WHODATJET_ANSWERS_FILE:-}" ] && [ -r "$WHODATJET_ANSWERS_FILE" ]; the
   WHODATJET_NONINTERACTIVE=1
 fi
 
+# A released installer carries its own version (stamped at build time); WHODATJET_VERSION overrides it.
+# With a version the code comes from the signed GitHub release; without one it is cloned from git (WHODATJET_REF).
+VERSION="${WHODATJET_VERSION:-@VERSION@}"
+case "$VERSION" in @*) VERSION="" ;; esac
+REPO="${WHODATJET_REPO:-xDecisionSystems/WhoDatJet}"
+COSIGN_VERSION=v3.1.4
+cosign_sha() { case "$1" in
+  amd64) echo 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa ;;
+  arm64) echo ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2 ;;
+esac; }
+
 REPO_URL="${WHODATJET_REPO_URL:-https://github.com/xDecisionSystems/WhoDatJet.git}"
 REF="${WHODATJET_REF:-main}"
 PROFILE="${WHODATJET_PROFILE:-medium}"
@@ -61,7 +72,7 @@ ask() {
 say "Installing packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq curl ca-certificates git sqlite3 >/dev/null
+apt-get install -y -qq curl ca-certificates git sqlite3 python3 >/dev/null
 
 if ! command -v uv >/dev/null && [ ! -x /usr/local/bin/uv ]; then
   say "Installing uv"
@@ -91,16 +102,57 @@ else
 fi
 # The web pages are published through NPMplus (HTTPS on the lab's wildcard certificate); `tailscale serve` is not used.
 
-say "Fetching WhoDatJet ($REF)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$tmp/src"
-version="$(git -C "$tmp/src" rev-parse --short HEAD)"
-rel="$APP/releases/$version"
-if [ ! -d "$rel" ]; then
-  mv "$tmp/src" "$rel"
-  rm -rf "$rel/.git"
-  (cd "$rel" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null)
+
+# cosign (pinned version, hash-checked) verifies release signatures here and in `whodatjet-update`.
+arch="$(dpkg --print-architecture)"
+want="$(cosign_sha "$arch")"; [ -n "$want" ] || die "unsupported architecture: $arch"
+if [ ! -x /usr/local/bin/cosign ] || [ "$(sha256sum /usr/local/bin/cosign | cut -d' ' -f1)" != "$want" ]; then
+  say "Installing cosign $COSIGN_VERSION"
+  curl -fsSL -o "$tmp/cosign" "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-linux-$arch"
+  [ "$(sha256sum "$tmp/cosign" | cut -d' ' -f1)" = "$want" ] || die "the cosign download does not match its pinned checksum"
+  install -m 0755 "$tmp/cosign" /usr/local/bin/cosign
 fi
+
+if [ -n "$VERSION" ]; then
+  say "Fetching WhoDatJet $VERSION (signed release)"
+  base="https://github.com/$REPO/releases/download/$VERSION"
+  curl -fsSL -o "$tmp/manifest.json" "$base/manifest.json"
+  curl -fsSL -o "$tmp/manifest.json.sigstore.json" "$base/manifest.json.sigstore.json"
+  cosign verify-blob --bundle "$tmp/manifest.json.sigstore.json" \
+    --certificate-identity "https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$VERSION" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com "$tmp/manifest.json" >/dev/null 2>&1 \
+    || die "the release signature is NOT valid; nothing was installed"
+  tarball="whodatjet-$VERSION.tar.gz"
+  want_sha="$(python3 - "$tmp/manifest.json" "$tarball" "$VERSION" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+if m.get("version") != sys.argv[3]:
+    sys.exit("manifest is for a different version")
+print(m["assets"][sys.argv[2]]["sha256"])
+PY
+)" || die "the signed manifest does not describe $VERSION"
+  curl -fsSL -o "$tmp/$tarball" "$base/$tarball"
+  [ "$(sha256sum "$tmp/$tarball" | cut -d' ' -f1)" = "$want_sha" ] || die "$tarball does not match the signed manifest"
+  version="$VERSION"
+  rel="$APP/releases/$version"
+  if [ ! -d "$rel" ]; then
+    mkdir -p "$tmp/x" && tar -xzf "$tmp/$tarball" -C "$tmp/x"
+    mv "$tmp/x/whodatjet-$VERSION" "$rel"
+    (cd "$rel" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null)
+  fi
+else
+  say "Fetching WhoDatJet ($REF, from git, not a signed release)"
+  git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$tmp/src"
+  version="$(git -C "$tmp/src" rev-parse --short HEAD)"
+  rel="$APP/releases/$version"
+  if [ ! -d "$rel" ]; then
+    mv "$tmp/src" "$rel"
+    rm -rf "$rel/.git"
+    (cd "$rel" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null)
+  fi
+fi
+install -m 0755 "$rel/deploy/whodatjet-update" /usr/local/bin/whodatjet-update
 # The service account must be able to run the interpreter and the code.
 chmod -R a+rX "$rel" "$APP/python" 2>/dev/null || true
 ln -sfn "$rel" "$APP/current"
@@ -202,4 +254,4 @@ echo "Check:    $APP/current/.venv/bin/whodatjet status   (as root, with: set -a
 echo "Pages:    the API listens on port 8000 and the admin console on 8001 (loopback unless WHODATJET_ADMIN_BIND is set);"
 echo "          publish them with NPMplus proxy hosts (forward to http://<this-ip>:8000 and :8001). Admin sign-in: admin / admin, change it at first login."
 echo "Logs:     journalctl -u whodatjet-api -u whodatjet-ingest"
-echo "Update:   re-run the install command."
+echo "Update:   sudo whodatjet-update   (verifies the signed release, backs up, rolls back by itself if unhealthy; --check, --rollback)"
