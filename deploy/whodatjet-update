@@ -11,6 +11,8 @@
 # the manifest, before anything is installed. If the new version is unhealthy after the switch it goes back to
 # the previous release by itself. Database migrations only add things, and a database backup is taken first.
 set -euo pipefail
+# cosign and uv live in /usr/local/bin, which minimal environments (pct exec, cron, systemd) may not have on PATH.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 REPO="${WDJ_REPO:-xDecisionSystems/WhoDatJet}"
 APP="${WDJ_APP:-/opt/whodatjet}"
@@ -28,6 +30,7 @@ COSIGN="${WDJ_COSIGN:-cosign}"
 UV="${WDJ_UV:-uv}"
 KEEP="${WDJ_KEEP_RELEASES:-3}"
 SERVICE_USER="${WDJ_SERVICE_USER:-whodatjet}"
+RUNUSER="${WDJ_RUNUSER:-runuser}"
 OIDC_ISSUER="https://token.actions.githubusercontent.com"
 SERVICES=(whodatjet-api whodatjet-admin)
 
@@ -55,8 +58,8 @@ flock -n 9 || die "another update is running"
 current_version() { [ -L "$APP/current" ] && basename "$(readlink -f "$APP/current")" || echo none; }
 
 as_service() {  # run a command as the service account with the service environment loaded
-  if [ "${WDJ_NO_ROOT_CHECK:-}" = 1 ]; then "$@"; return; fi
-  runuser -u "$SERVICE_USER" -- bash -c 'set -a; . "$0"; [ -r "$1" ] && . "$1"; set +a; shift 2; exec "$@"' \
+  # bash -c: $0 = env file, $1 = store env file, remaining args = the command
+  "$RUNUSER" -u "$SERVICE_USER" -- bash -c 'set -a; . "$0"; [ -r "$1" ] && . "$1"; set +a; shift 1; exec "$@"' \
     "$ENV_FILE" "$STORE_ENV" "$@"
 }
 
@@ -120,6 +123,8 @@ echo "target:    $TARGET"
 if [ "$TARGET" = "$CUR" ] && [ -z "$WANT" ]; then say "already up to date"; exit 0; fi
 [ "$TARGET" != "$CUR" ] || die "$TARGET is already installed"
 
+command -v "$COSIGN" >/dev/null 2>&1 || die "cosign not found ($COSIGN); it is needed to verify releases. Nothing was installed"
+command -v "$UV" >/dev/null 2>&1 || die "uv not found ($UV); nothing was installed"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 base="$RELEASE_BASE/$TARGET"
 
@@ -149,14 +154,17 @@ curl -fsSL -m 600 -o "$work/$tarball" "$base/$tarball" || die "cannot download $
 
 say "Installing $TARGET"
 rel="$APP/releases/$TARGET"
-if [ ! -d "$rel" ]; then
+# A virtualenv records its own absolute path in its scripts, so it must be built where it will live (never
+# built elsewhere and renamed). `.installed` marks a complete install; anything without it is rebuilt.
+if [ ! -f "$rel/.installed" ]; then
+  rm -rf "$rel"
   mkdir -p "$APP/releases" "$work/x"
   tar -xzf "$work/$tarball" -C "$work/x"
-  mv "$work/x/whodatjet-$TARGET" "$rel.partial"
-  (cd "$rel.partial" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null) \
-    || { rm -rf "$rel.partial"; die "dependency install failed; nothing was changed"; }
-  chmod -R a+rX "$rel.partial"
-  mv "$rel.partial" "$rel"
+  mv "$work/x/whodatjet-$TARGET" "$rel"
+  (cd "$rel" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null) \
+    || { rm -rf "$rel"; die "dependency install failed; nothing was changed"; }
+  chmod -R a+rX "$rel"
+  touch "$rel/.installed"
 fi
 
 say "Backing up the databases"

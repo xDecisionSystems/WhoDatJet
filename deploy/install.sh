@@ -136,20 +136,24 @@ PY
   [ "$(sha256sum "$tmp/$tarball" | cut -d' ' -f1)" = "$want_sha" ] || die "$tarball does not match the signed manifest"
   version="$VERSION"
   rel="$APP/releases/$version"
-  if [ ! -d "$rel" ]; then
+  if [ ! -f "$rel/.installed" ]; then
+    rm -rf "$rel"
     mkdir -p "$tmp/x" && tar -xzf "$tmp/$tarball" -C "$tmp/x"
     mv "$tmp/x/whodatjet-$VERSION" "$rel"
     (cd "$rel" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null)
+    touch "$rel/.installed"
   fi
 else
   say "Fetching WhoDatJet ($REF, from git, not a signed release)"
   git clone --quiet --depth 1 --branch "$REF" "$REPO_URL" "$tmp/src"
   version="$(git -C "$tmp/src" rev-parse --short HEAD)"
   rel="$APP/releases/$version"
-  if [ ! -d "$rel" ]; then
+  if [ ! -f "$rel/.installed" ]; then
+    rm -rf "$rel"
     mv "$tmp/src" "$rel"
     rm -rf "$rel/.git"
     (cd "$rel" && UV_PYTHON_INSTALL_DIR="$APP/python" "$UV" sync --frozen --no-dev --python 3.12 >/dev/null)
+    touch "$rel/.installed"
   fi
 fi
 install -m 0755 "$rel/deploy/whodatjet-update" /usr/local/bin/whodatjet-update

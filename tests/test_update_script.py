@@ -24,6 +24,7 @@ exit 0
 """
 STUB_UV = """#!/usr/bin/env bash
 echo "uv $*" >> "$WDJ_TEST_LOG"
+echo "uv-cwd $PWD" >> "$WDJ_TEST_LOG"
 mkdir -p .venv/bin
 cp "$WDJ_STUB_WHODATJET" .venv/bin/whodatjet && chmod +x .venv/bin/whodatjet
 ln -sf "$WDJ_STUB_PYTHON" .venv/bin/python
@@ -31,6 +32,13 @@ ln -sf "$WDJ_STUB_PYTHON" .venv/bin/python
 STUB_COSIGN = """#!/usr/bin/env bash
 echo "cosign $*" >> "$WDJ_TEST_LOG"
 [ -z "${WDJ_STUB_COSIGN_FAIL:-}" ]
+"""
+STUB_RUNUSER = """#!/usr/bin/env bash
+# runuser -u USER -- CMD...   (no user switching in tests; just run CMD)
+echo "runuser $*" >> "$WDJ_TEST_LOG"
+[ "$1" = -u ] && shift 2
+[ "$1" = -- ] && shift
+exec "$@"
 """
 STUB_SYSTEMCTL = """#!/usr/bin/env bash
 echo "systemctl $*" >> "$WDJ_TEST_LOG"
@@ -83,7 +91,7 @@ def box(tmp_path, health):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name, body in (("whodatjet-stub", STUB_WHODATJET), ("uv", STUB_UV), ("cosign", STUB_COSIGN),
-                       ("systemctl", STUB_SYSTEMCTL)):
+                       ("systemctl", STUB_SYSTEMCTL), ("runuser", STUB_RUNUSER)):
         (bindir / name).write_text(body)
         (bindir / name).chmod(0o755)
     app = tmp_path / "opt"
@@ -101,7 +109,8 @@ def box(tmp_path, health):
         "WDJ_ENV": str(tmp_path / "svc.env"), "WDJ_STORE_ENV": str(tmp_path / "none.env"),
         "WDJ_UNIT_DIR": str(tmp_path / "units"), "WDJ_RELEASE_BASE": f"file://{tmp_path}/rel",
         "WDJ_COSIGN": str(bindir / "cosign"), "WDJ_UV": str(bindir / "uv"),
-        "WDJ_SYSTEMCTL": str(bindir / "systemctl"), "WDJ_PYTHON": sys.executable,
+        "WDJ_SYSTEMCTL": str(bindir / "systemctl"), "WDJ_RUNUSER": str(bindir / "runuser"),
+        "WDJ_PYTHON": sys.executable,
         "WDJ_HEALTH_API": f"http://127.0.0.1:{health.port}/healthz", "WDJ_HEALTH_WAIT": "2",
         "WDJ_LATEST_URL": f"http://127.0.0.1:{health.port}/releases/latest",
         "WDJ_SELF": str(tmp_path / "installed-update"), "WDJ_TEST_LOG": str(tmp_path / "calls.log"),
@@ -160,7 +169,13 @@ def test_successful_update(box):
     verify = next(line for line in log if line.startswith("cosign verify-blob"))
     assert f"--certificate-identity https://github.com/{REPO}/.github/workflows/release.yml@refs/tags/v0.2.0" in verify
     assert "--certificate-oidc-issuer https://token.actions.githubusercontent.com" in verify
-    assert any("whodatjet backup" in line for line in log)                         # backed up before switching
+    # commands reach the app intact through the service-account wrapper (regression: first word was dropped)
+    # the virtualenv must be built in its final directory (venv scripts embed absolute paths)
+    assert f"uv-cwd {app}/releases/v0.2.0" in log, log
+    assert (app / "releases" / "v0.2.0" / ".installed").exists()
+    assert any(line == "whodatjet backup --keep 14" for line in log), log
+    assert any(line == "whodatjet migrate" for line in log), log
+    assert not any("exec:" in line for line in log)
     assert log.index(next(line for line in log if "whodatjet backup" in line)) < \
         log.index(next(line for line in log if "whodatjet migrate" in line))
     assert any(line.startswith("systemctl restart whodatjet-api whodatjet-admin") for line in log)
@@ -255,3 +270,31 @@ def test_old_releases_pruned(box):
         assert run(env, "--version", v, WDJ_KEEP_RELEASES="2").returncode == 0, v
     kept = sorted(p.name for p in (app / "releases").iterdir())
     assert "v0.5.0" in kept and "v0.4.0" in kept and "v0.1.0" not in kept
+
+
+def test_missing_cosign_is_reported_as_such_not_as_bad_signature(box):
+    root, app, env = box
+    make_release(root, "v0.2.0")
+    r = run(env, "--version", "v0.2.0", WDJ_COSIGN="/nonexistent/cosign")
+    assert r.returncode != 0 and "cosign not found" in r.stderr and "NOT valid" not in r.stderr
+    assert current(app) == "v0.1.0" and not (app / "releases" / "v0.2.0").exists()
+
+
+def test_path_includes_usr_local_bin(box):
+    root, app, env = box
+    env = {**env, "PATH": "/usr/bin:/bin"}
+    env["WDJ_COSIGN"] = "cosign"                                   # resolved through the script's own PATH fix
+    r = subprocess.run(["bash", "-c", f'export PATH=/usr/bin:/bin; bash {SCRIPT} --check'], env=env,
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr
+
+
+def test_incomplete_release_directory_is_rebuilt(box):
+    root, app, env = box
+    make_release(root, "v0.2.0")
+    stale = app / "releases" / "v0.2.0"
+    stale.mkdir(parents=True)
+    (stale / "junk").write_text("half-installed")                     # left by an interrupted earlier attempt
+    r = run(env, "--version", "v0.2.0")
+    assert r.returncode == 0, r.stderr
+    assert not (stale / "junk").exists() and (stale / ".installed").exists()
