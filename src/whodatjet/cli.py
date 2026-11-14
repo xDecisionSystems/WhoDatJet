@@ -223,9 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "watchdog":
         from whodatjet import watchdog
 
-        admin_port = os.environ.get("WHODATJET_ADMIN_PORT", "8001")
-        checks = watchdog.run(cfg, admin_url=f"http://127.0.0.1:{admin_port}/healthz"
-                              if os.environ.get("WHODATJET_ADMIN_ENABLED", "1") != "0" else None)
+        checks = watchdog.run(cfg, admin_url=watchdog.admin_health_url(dict(os.environ)))
         bad = [c for c in checks if c.problem]
         for c in bad:
             print(f"PROBLEM {c.key}: {c.problem}")

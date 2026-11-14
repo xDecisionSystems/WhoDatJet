@@ -26,6 +26,14 @@ LOGIN_WINDOW_MIN = 15
 DEFAULT_PASSWORD_GRACE_H = 24
 
 
+def admin_health_url(environ: dict[str, str]) -> str | None:
+    """Local health URL of the admin console, honoring its path prefix (e.g. /admin); None if disabled."""
+    if environ.get("WHODATJET_ADMIN_ENABLED", "1") == "0":
+        return None
+    prefix = environ.get("WHODATJET_ADMIN_PREFIX", "").strip("/")
+    return f"http://127.0.0.1:{environ.get('WHODATJET_ADMIN_PORT', '8001')}{'/' + prefix if prefix else ''}/healthz"
+
+
 @dataclass
 class Check:
     key: str

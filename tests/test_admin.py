@@ -573,3 +573,12 @@ def test_one_shot_announce_is_not_deduplicated_and_honors_toggle(hooked, slack):
     alerts.set_setting(admin_conn(hooked), "event.update_result", "0", "t")
     assert alerts.announce(hooked.admin_db_path, "update_result", "again", transport=slack.transport, attempts=1)
     assert len(slack.posts) == 2                                         # switched off: logged only
+
+
+def test_watchdog_admin_url_follows_the_path_prefix():
+    """Regression: with the console under /admin the watchdog kept checking /healthz and raised a false alert."""
+    assert watchdog.admin_health_url({}) == "http://127.0.0.1:8001/healthz"
+    assert watchdog.admin_health_url({"WHODATJET_ADMIN_PREFIX": "/admin"}) == "http://127.0.0.1:8001/admin/healthz"
+    assert watchdog.admin_health_url({"WHODATJET_ADMIN_PREFIX": "admin/", "WHODATJET_ADMIN_PORT": "9"}) == \
+        "http://127.0.0.1:9/admin/healthz"
+    assert watchdog.admin_health_url({"WHODATJET_ADMIN_ENABLED": "0"}) is None
