@@ -198,13 +198,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "serve":
-        import uvicorn
+        from whodatjet.server import run_api
 
         if args.env_file:
             os.environ["WHODATJET_ENV_FILE"] = str(args.env_file.resolve())
-        uvicorn.run("whodatjet.api:create_app_from_env", factory=True, host=cfg.api_host, port=cfg.api_port,
-                    workers=cfg.api_workers, limit_concurrency=cfg.api_limit_concurrency,
-                    proxy_headers=False, server_header=False, log_level="info")
+        run_api(cfg.api_host, cfg.api_port, cfg.api_workers, cfg.api_limit_concurrency)
         return 0
 
     if args.command == "serve-admin":
