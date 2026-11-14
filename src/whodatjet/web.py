@@ -1,8 +1,8 @@
 """Landing page for humans: search on the left, a random aircraft (replaced by search results) on the right.
 
-The page and its `/ui/*` JSON endpoints need no API key, so they deliberately show **aircraft-level facts only**
-(make, model, year, type, engine, registration dates). Registrant names and addresses, and the history/aircraft
-endpoints, stay behind API keys under `/v1`.
+The page and its `/ui/*` JSON endpoints need no API key. They show the aircraft facts and the registered owner
+(name, address, registrant type: public FAA record; owner decision 2026-11-14). The history and aircraft
+endpoints stay behind API keys under `/v1`. The site is only reachable over the tailnet.
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ ENGINE_TYPE = {"0": "None", "1": "Reciprocating", "2": "Turbo-prop", "3": "Turbo
                "5": "Turbo-fan", "6": "Ramjet", "7": "Two-cycle", "8": "Four-cycle", "9": "Unknown",
                "10": "Electric", "11": "Rotary"}
 CATEGORY = {"1": "Land", "2": "Sea", "3": "Amphibian"}
+REGISTRANT_TYPE = {"1": "Individual", "2": "Partnership", "3": "Corporation", "4": "Co-owned", "5": "Government",
+                   "7": "LLC", "8": "Non-citizen corporation", "9": "Non-citizen co-owned"}
 STATUS = {"V": "Valid", "E": "Expired", "R": "Registration pending", "D": "Expired (dealer)"}
 NOT_FOUND_TEXT = {
     "no_records": "The registry has no record of this N-number.",
@@ -44,8 +46,21 @@ def _clean(value) -> str | None:
     return text or None
 
 
+def owner(record: dict) -> dict | None:
+    name = _clean(record.get("registrant_name"))
+    city, state, zip_code = (_clean(record.get(k)) for k in ("city", "state", "zip_code"))
+    country = _clean(record.get("country"))
+    locality = " ".join(x for x in (f"{city}," if city and (state or zip_code) else city, state, zip_code) if x)
+    lines = [x for x in (_clean(record.get("street")), _clean(record.get("street2")), locality or None,
+                         country if country and country.upper() not in ("US", "USA") else None) if x]
+    kind = REGISTRANT_TYPE.get(str(record.get("registrant_type")), _clean(record.get("registrant_type")))
+    if not (name or lines or kind):
+        return None
+    return {"name": name, "address": lines, "type": kind}
+
+
 def describe(record: dict) -> dict:
-    """Turn a lookup result into the card shown on the page (no registrant fields)."""
+    """Turn a lookup result into the card shown on the page."""
     make, model = _clean(record.get("manufacturer_name")), _clean(record.get("model_name"))
     kind = AIRCRAFT_TYPE.get(str(record.get("aircraft_type")), _clean(record.get("aircraft_type")))
     cat = CATEGORY.get(str(record.get("aircraft_category")))
@@ -69,6 +84,7 @@ def describe(record: dict) -> dict:
         "found": True, "n_number": record["n_number"],
         "headline": " ".join(x for x in (make, model) if x) or "Aircraft",
         "facts": [{"label": k, "value": v} for k, v in facts if v],
+        "owner": owner(record),
         "meta": {"as_of": record.get("date"), "observed": record.get("observation_date"),
                  "basis": record.get("basis"), "confidence": record.get("data_confidence"),
                  "flags": record.get("data_quality_flags") or []},

@@ -35,6 +35,16 @@
       var row = document.createElement("div"), dt = document.createElement("dt"), dd = document.createElement("dd");
       dt.textContent = f.label; dd.textContent = f.value; row.appendChild(dt); row.appendChild(dd); dl.appendChild(row);
     });
+    var o = data.owner, ow = $("owner");
+    if (o) {
+      $("owner-name").textContent = o.name || "";
+      var addr = $("owner-address"); addr.textContent = "";
+      (o.address || []).forEach(function (line, i) {
+        if (i) addr.appendChild(document.createElement("br")); addr.appendChild(document.createTextNode(line));
+      });
+      $("owner-type").textContent = o.type ? "Registrant type: " + o.type : "";
+      ow.hidden = false;
+    } else { ow.hidden = true; }
     var m = data.meta || {}, parts = [];
     if (m.as_of) parts.push("As of " + m.as_of);
     if (m.observed) parts.push("FAA data from " + m.observed);

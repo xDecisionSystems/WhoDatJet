@@ -1,12 +1,9 @@
 # ruff: noqa: F811  (fixtures are imported from test_api)
-"""Landing page: search on the left, random aircraft on the right; aircraft facts only, no registrant data."""
+"""Landing page: search on the left, random aircraft on the right, with facts and the registered owner."""
 
 from __future__ import annotations
 
 from tests.test_api import client, env, world  # noqa: F401  (fixtures)
-
-REGISTRANT_KEYS = {"registrant_name", "street", "street2", "city", "state", "zip_code", "country",
-                   "registrant_type"}
 
 
 def test_home_page_is_public_and_has_both_panels(client):
@@ -23,7 +20,7 @@ def test_home_page_is_public_and_has_both_panels(client):
         assert a.status_code == 200 and a.headers["cache-control"] == "no-cache"
 
 
-def test_random_aircraft_has_facts_and_no_registrant_data(client):
+def test_random_aircraft_has_facts_and_owner(client):
     seen = set()
     for _ in range(6):
         r = client.get("/ui/random")
@@ -31,11 +28,28 @@ def test_random_aircraft_has_facts_and_no_registrant_data(client):
         body = r.json()
         assert body["found"] is True and body["n_number"].startswith("N") and body["headline"]
         assert body["facts"] and all(set(f) == {"label", "value"} for f in body["facts"])
-        text = r.text.lower()
-        assert not (REGISTRANT_KEYS & set(body))                                       # keys
-        assert "registrant" not in text and "street" not in text and "zip_code" not in text
+        owner = body["owner"]
+        assert owner and owner["name"] and isinstance(owner["address"], list)         # owner shown (owner decision)
+        assert set(owner) == {"name", "address", "type"}
         seen.add(body["n_number"])
-    assert seen                                                                        # something was returned
+    assert seen
+
+
+def test_owner_formatting():
+    from whodatjet.web import owner
+    o = owner({"registrant_name": "ACME AIR LLC", "street": "1 MAIN ST", "street2": "SUITE 4", "city": "LAKE ELMO",
+               "state": "MN", "zip_code": "55042", "country": "US", "registrant_type": "7"})
+    assert o == {"name": "ACME AIR LLC", "address": ["1 MAIN ST", "SUITE 4", "LAKE ELMO, MN 55042"], "type": "LLC"}
+    o = owner({"registrant_name": "X GMBH", "street": "HAUPTSTR 1", "city": "BERLIN", "state": None,
+               "zip_code": "10115", "country": "DE", "registrant_type": "8"})
+    assert o["address"] == ["HAUPTSTR 1", "BERLIN, 10115", "DE"] and o["type"] == "Non-citizen corporation"
+    assert owner({}) is None
+
+
+def test_page_has_owner_section_and_no_stale_notice(client):
+    html = client.get("/").text
+    assert 'id="owner"' in html and "Registered owner" in html
+    assert "Owner names and addresses are available to API-key holders" not in html
 
 
 def test_search_returns_the_searched_aircraft(client, env, world):
