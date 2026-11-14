@@ -205,6 +205,14 @@ as_service "$APP/current/.venv/bin/whodatjet" migrate >/dev/null || fail_and_rol
 restart_services || fail_and_rollback "services failed to restart"
 wait_healthy || fail_and_rollback "health check failed after the update"
 
+# A release can change what is stored from the FAA files; then the registry is rebuilt from the retained
+# archives. The API keeps answering while this runs. A failure here does not undo the update (the service is
+# healthy); it is reported, and the daily ingest retries the rebuild by itself.
+say "Checking whether the registry must be rebuilt"
+as_service "$APP/current/.venv/bin/whodatjet" rebuild --if-needed \
+  || { echo "warning: the registry rebuild failed; the next ingest will retry it" >&2
+       notify "updated to $TARGET but the registry rebuild failed; the next daily ingest retries it"; }
+
 # Keep the newest releases (current and previous are always kept).
 keep_cur="$(readlink -f "$APP/current")"; keep_prev="$(readlink -f "$APP/previous" 2>/dev/null || true)"
 ls -1dt "$APP"/releases/*/ 2>/dev/null | sed 's#/$##' | tail -n +"$((KEEP + 1))" | while read -r d; do

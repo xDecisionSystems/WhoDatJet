@@ -30,7 +30,7 @@ def test_random_aircraft_has_facts_and_owner(client):
         assert body["facts"] and all(set(f) == {"label", "value"} for f in body["facts"])
         owner = body["owner"]
         assert owner and owner["name"] and isinstance(owner["address"], list)         # owner shown (owner decision)
-        assert set(owner) == {"name", "address", "type"}
+        assert set(owner) == {"name", "address", "type", "also_registered"}
         seen.add(body["n_number"])
     assert seen
 
@@ -39,7 +39,8 @@ def test_owner_formatting():
     from whodatjet.web import owner
     o = owner({"registrant_name": "ACME AIR LLC", "street": "1 MAIN ST", "street2": "SUITE 4", "city": "LAKE ELMO",
                "state": "MN", "zip_code": "55042", "country": "US", "registrant_type": "7"})
-    assert o == {"name": "ACME AIR LLC", "address": ["1 MAIN ST", "SUITE 4", "LAKE ELMO, MN 55042"], "type": "LLC"}
+    assert o == {"name": "ACME AIR LLC", "address": ["1 MAIN ST", "SUITE 4", "LAKE ELMO, MN 55042"], "type": "LLC",
+                 "also_registered": []}
     o = owner({"registrant_name": "X GMBH", "street": "HAUPTSTR 1", "city": "BERLIN", "state": None,
                "zip_code": "10115", "country": "DE", "registrant_type": "8"})
     assert o["address"] == ["HAUPTSTR 1", "BERLIN, 10115", "DE"] and o["type"] == "Non-citizen corporation"
@@ -76,3 +77,37 @@ def test_api_endpoints_still_require_keys(client):
     assert client.get("/v1/snapshots").status_code == 401
     assert client.get("/v1/tail-numbers/N1").status_code == 401
     assert client.get("/healthz").status_code == 200
+
+
+def test_certification_decoding():
+    from whodatjet.web import certification
+    assert certification("1N") == "Standard, Normal (1N)"
+    assert certification("1NU") == "Standard, Normal, Utility (1NU)"
+    assert certification("1") == "Standard (1)"
+    assert certification("42") == "Experimental (42)"                       # only the class is decoded
+    assert certification("9A") == "Light sport (9A)"
+    assert certification("ZZ") == "ZZ" and certification("  ") is None and certification(None) is None
+
+
+def test_card_shows_manufacturer_model_code_and_extra_facts():
+    from whodatjet.web import describe
+    card = describe({
+        "n_number": "N1", "date": "2026-11-14", "mfr_mdl_code": "7100510", "manufacturer_name": "CESSNA",
+        "model_name": "172", "certification": "1N", "airworthiness_date": "1954-04-30", "fractional_owner": "Y",
+        "kit_manufacturer": "VANS AIRCRAFT INC", "kit_model": "RV-6", "region": "C", "county": "097",
+        "registrant_name": "A B", "other_names": ["C D", "E F"], "registrant_type": "1"})
+    facts = {f["label"]: f["value"] for f in card["facts"]}
+    assert facts["Manufacturer-model code"] == "7100510"
+    assert facts["Certification"] == "Standard, Normal (1N)" and facts["Airworthiness date"] == "1954-04-30"
+    assert facts["Fractional ownership"] == "Yes" and facts["Kit"] == "VANS AIRCRAFT INC RV-6"
+    assert facts["FAA region"] == "Great Lakes" and facts["County code"] == "097"
+    assert card["owner"]["also_registered"] == ["C D", "E F"]
+    bare = describe({"n_number": "N2", "date": "2026-11-14", "manufacturer_name": "X", "model_name": "Y",
+                     "other_names": [], "fractional_owner": None})
+    labels = {f["label"] for f in bare["facts"]}
+    assert not labels & {"Certification", "Fractional ownership", "Kit", "FAA region", "Manufacturer-model code"}
+
+
+def test_page_has_also_registered_block(client):
+    html = client.get("/").text
+    assert 'id="owner-also"' in html and "Also registered to" in html

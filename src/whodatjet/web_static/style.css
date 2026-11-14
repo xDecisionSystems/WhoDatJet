@@ -21,7 +21,7 @@ button.secondary{background:transparent;color:var(--accent)}button:disabled{opac
 .nnum{font:700 2.4rem/1.1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em}
 .facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.6rem 1.25rem;margin:0 0 1rem}
 .facts div{border-top:1px solid var(--line);padding-top:.4rem}.facts dt{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}.facts dd{margin:0;font-weight:600;word-break:break-word}
-.owner{border-top:1px solid var(--line);padding-top:.75rem;margin-bottom:1rem}.owner h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 .35rem;font-weight:600}.owner-name{font-weight:700;font-size:1.1rem}address{font-style:normal;margin:.15rem 0}
+.owner{border-top:1px solid var(--line);padding-top:.75rem;margin-bottom:1rem}.owner h3{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 .35rem;font-weight:600}.owner-name{font-weight:700;font-size:1.1rem}address{font-style:normal;margin:.15rem 0}.owner-also{margin-top:.6rem}.owner-also .k{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}.owner-also ul{margin:.2rem 0 0;padding-left:1.1rem}
 .notfound .nnum{color:var(--muted)}.loading{color:var(--muted)}
 .foot{max-width:1100px;margin:1rem auto 2rem;padding:0 1rem;color:var(--muted);font-size:.85rem}
 @media(max-width:780px){.layout{grid-template-columns:1fr}.nnum{font-size:2rem}}

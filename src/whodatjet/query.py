@@ -14,6 +14,7 @@ As-of order for `lookup(n, D)`:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -45,6 +46,8 @@ FIELDS: tuple[str, ...] = (
     "status_code", "registrant_type", "registrant_name", "street", "street2", "city", "state", "zip_code",
     "country", "certificate_issue_date", "expiration_date", "cancel_date", "last_action_date", "mode_s_code_hex",
     "valid_from", "valid_to", "last_seen_date", "first_absent_date",
+    "certification", "fractional_owner", "airworthiness_date", "other_names", "kit_manufacturer", "kit_model",
+    "region", "county",
 )
 METADATA: tuple[str, ...] = ("n_number", "date", "observation_date", "snapshot_id", "archive_sha256", "basis",
                              "data_confidence", "data_quality_flags")
@@ -116,7 +119,9 @@ class Snapshots:
 _RECORD_COLS = ("r.id AS record_id, r.mfr_mdl_code, r.serial_number_raw AS serial_number, r.year_mfr, r.status_code, "
                 "r.registrant_type, r.registrant_name, r.street, r.street2, r.city, r.state, r.zip_code, r.country, "
                 "r.certificate_issue_date AS record_certificate_issue_date, r.expiration_date, r.cancel_date, "
-                "r.last_action_date, r.mode_s_code_hex, r.first_seen_snapshot_id AS record_first_seen")
+                "r.last_action_date, r.mode_s_code_hex, r.certification, r.fractional_owner, r.airworthiness_date, "
+                "r.other_names, r.kit_manufacturer, r.kit_model, r.region, r.county, "
+                "r.first_seen_snapshot_id AS record_first_seen")
 
 
 def _record_at(conn, aircraft_id: int, tail_id: int, snapshot_id: int) -> sqlite3.Row | None:
@@ -234,8 +239,10 @@ def lookup(conn: sqlite3.Connection, n_number: str, d: date, *, today: date, gap
     if rec is not None:
         for k in ("mfr_mdl_code", "serial_number", "year_mfr", "status_code", "registrant_type", "registrant_name",
                   "street", "street2", "city", "state", "zip_code", "country", "expiration_date", "cancel_date",
-                  "last_action_date", "mode_s_code_hex"):
+                  "last_action_date", "mode_s_code_hex", "certification", "fractional_owner", "airworthiness_date",
+                  "kit_manufacturer", "kit_model", "region", "county"):
             out[k] = rec[k]
+        out["other_names"] = json.loads(rec["other_names"]) if rec["other_names"] else []
     for k in ("manufacturer_name", "model_name", "aircraft_type", "engine_type", "aircraft_category", "engine_count",
               "seats"):
         out[k] = model[k] if model is not None else None

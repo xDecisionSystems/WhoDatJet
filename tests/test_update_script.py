@@ -175,6 +175,7 @@ def test_successful_update(box):
     assert (app / "releases" / "v0.2.0" / ".installed").exists()
     assert any(line == "whodatjet backup --keep 14" for line in log), log
     assert any(line == "whodatjet migrate" for line in log), log
+    assert log.index("whodatjet rebuild --if-needed") > log.index("whodatjet migrate")    # rebuild after migrating
     assert not any("exec:" in line for line in log)
     assert log.index(next(line for line in log if "whodatjet backup" in line)) < \
         log.index(next(line for line in log if "whodatjet migrate" in line))
@@ -298,3 +299,15 @@ def test_incomplete_release_directory_is_rebuilt(box):
     r = run(env, "--version", "v0.2.0")
     assert r.returncode == 0, r.stderr
     assert not (stale / "junk").exists() and (stale / ".installed").exists()
+
+
+def test_failed_registry_rebuild_does_not_undo_the_update(box):
+    root, app, env = box
+    make_release(root, "v0.2.0")
+    bindir = root / "bin"
+    stub = (bindir / "whodatjet-stub").read_text().replace('exit 0', 'if [ "$1" = rebuild ]; then exit 1; fi\nexit 0')
+    (bindir / "whodatjet-stub").write_text(stub)
+    r = run(env, "--version", "v0.2.0")
+    assert r.returncode == 0 and "rebuild failed" in r.stderr
+    assert current(app) == "v0.2.0"                                  # still updated and healthy
+    assert any("update_result" in line and "rebuild failed" in line for line in calls(root))

@@ -43,6 +43,10 @@
         if (i) addr.appendChild(document.createElement("br")); addr.appendChild(document.createTextNode(line));
       });
       $("owner-type").textContent = o.type ? "Registrant type: " + o.type : "";
+      var also = o.also_registered || [], alsoBox = $("owner-also"), list = $("owner-also-list");
+      list.textContent = "";
+      also.forEach(function (name) { var li = document.createElement("li"); li.textContent = name; list.appendChild(li); });
+      alsoBox.hidden = also.length === 0;
       ow.hidden = false;
     } else { ow.hidden = true; }
     var m = data.meta || {}, parts = [];

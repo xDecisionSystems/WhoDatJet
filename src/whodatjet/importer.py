@@ -36,7 +36,7 @@ from whodatjet.normalize import (
 )
 
 log = logging.getLogger(__name__)
-REQUIRED_SCHEMA_VERSION = 2
+REQUIRED_SCHEMA_VERSION = 3
 
 REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
     "MASTER.txt": ("N-NUMBER", "SERIAL NUMBER", "MFR MDL CODE", "YEAR MFR", "TYPE REGISTRANT", "NAME",
@@ -52,7 +52,8 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
 RECORD_COLUMNS = ("n_number_raw", "faa_unique_id", "mfr_mdl_code", "serial_number_raw", "year_mfr", "status_code",
                   "registrant_type", "registrant_name", "street", "street2", "city", "state", "zip_code",
                   "country", "certificate_issue_date", "expiration_date", "cancel_date", "last_action_date",
-                  "mode_s_code_hex")
+                  "mode_s_code_hex", "certification", "fractional_owner", "airworthiness_date", "other_names",
+                  "kit_manufacturer", "kit_model", "region", "county")
 
 
 class ImportError_(RuntimeError):  # noqa: N801 - avoid shadowing builtin ImportError
@@ -125,7 +126,16 @@ def master_record(r: dict[str, str]) -> tuple:
             clean(r["YEAR MFR"]), clean(r["STATUS CODE"]), clean(r["TYPE REGISTRANT"]), clean(r["NAME"]),
             clean(r["STREET"]), clean(r["STREET2"]), clean(r["CITY"]), clean(r["STATE"]), clean(r["ZIP CODE"]),
             clean(r["COUNTRY"]), faa_date(r["CERT ISSUE DATE"]), faa_date(r["EXPIRATION DATE"]), None,
-            faa_date(r["LAST ACTION DATE"]), clean(r["MODE S CODE HEX"]))
+            faa_date(r["LAST ACTION DATE"]), clean(r["MODE S CODE HEX"]),
+            # optional columns: absent in a future FAA layout means "unknown", not a failed import
+            clean(r.get("CERTIFICATION", "")), clean(r.get("FRACT OWNER", "")), faa_date(r.get("AIR WORTH DATE", "")),
+            _other_names(r), clean(r.get("KIT MFR", "")), clean(r.get("KIT MODEL", "")), clean(r.get("REGION", "")),
+            clean(r.get("COUNTY", "")))
+
+
+def _other_names(r: dict[str, str]) -> str | None:
+    names = [n for i in range(1, 6) if (n := clean(r.get(f"OTHER NAMES({i})", "")))]
+    return json.dumps(names, ensure_ascii=False) if names else None
 
 
 def dereg_record(r: dict[str, str]) -> tuple:
@@ -133,7 +143,7 @@ def dereg_record(r: dict[str, str]) -> tuple:
             clean(r["STATUS-CODE"]), None, clean(r["NAME"]), clean(r["STREET-MAIL"]), clean(r["STREET2-MAIL"]),
             clean(r["CITY-MAIL"]), clean(r["STATE-ABBREV-MAIL"]), clean(r["ZIP-CODE-MAIL"]),
             clean(r["COUNTRY-MAIL"]), faa_date(r["CERT-ISSUE-DATE"]), None, faa_date(r["CANCEL-DATE"]),
-            faa_date(r["LAST-ACT-DATE"]), clean(r["MODE S CODE HEX"]))
+            faa_date(r["LAST-ACT-DATE"]), clean(r["MODE S CODE HEX"]), None, None, None, None, None, None, None, None)
 
 
 def model_row(r: dict[str, str]) -> tuple:
@@ -305,6 +315,15 @@ class _Apply:
 
 # ---------------------------------------------------------------- orchestration
 
+def needs_rebuild(conn: sqlite3.Connection) -> str | None:
+    """The reason the registry must be rebuilt from the archives before importing, or None."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'needs_rebuild'").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return str(row[0]) if row else None
+
+
 def check_schema(conn: sqlite3.Connection) -> None:
     try:
         v = conn.execute("SELECT max(version) FROM schema_migrations").fetchone()[0]
@@ -312,6 +331,9 @@ def check_schema(conn: sqlite3.Connection) -> None:
         v = None
     if (v or 0) < REQUIRED_SCHEMA_VERSION:
         raise ImportError_("registry database is not migrated; run `whodatjet migrate`")
+    reason = needs_rebuild(conn)
+    if reason:
+        raise ImportError_(f"registry database must be rebuilt first ({reason}); run `whodatjet rebuild`")
 
 
 def ensure_store_row(conn: sqlite3.Connection, store: ArchiveStore) -> int:

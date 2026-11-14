@@ -379,3 +379,13 @@ def test_query_consistent_read_releases_snapshot_after_error(tmp_path):
         assert not reader.in_transaction
     finally:
         reader.close()
+
+
+def test_lookup_returns_the_extra_faa_fields(client, env, world):
+    j = get(client, env, "/v1/tail-numbers/" + world.n2).json()
+    for k in ("certification", "fractional_owner", "airworthiness_date", "other_names", "kit_manufacturer",
+              "kit_model", "region", "county", "mfr_mdl_code"):
+        assert k in j, k
+    assert isinstance(j["other_names"], list)
+    only = get(client, env, "/v1/tail-numbers/" + world.n2, fields="region,other_names").json()
+    assert {"region", "other_names"} <= set(only) and "kit_model" not in only

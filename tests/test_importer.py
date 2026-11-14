@@ -241,3 +241,76 @@ def test_import_pending_from_filesystem_store_in_order(conn, tmp_path):
     assert [r[0] for r in conn.execute("SELECT source_date FROM snapshot ORDER BY id")] == ["2026-11-11", "2026-11-12"]
     assert import_pending(conn, store, tmp_path / "staging") == []
     assert not list((tmp_path / "staging").iterdir())
+
+
+# ------------------------------------------------------------------ extra FAA columns (migration 0003)
+
+def test_extra_faa_columns_are_stored(conn, store_id, tmp_path):
+    a = Archive()
+    row = a.rows(MASTER)[0]
+    for col, val in (("CERTIFICATION", "1NU"), ("FRACT OWNER", "Y"), ("AIR WORTH DATE", "20010203"),
+                     ("OTHER NAMES(1)", "CO OWNER ONE"), ("OTHER NAMES(3)", "CO OWNER THREE"),
+                     ("KIT MFR", "VANS AIRCRAFT INC"), ("KIT MODEL", "RV-6"), ("REGION", "C"), ("COUNTY", "097")):
+        a.set(MASTER, row, col, val)
+    n = a.get(MASTER, row, "N-NUMBER").strip()
+    assert run(conn, store_id, tmp_path, a, "2026-11-11").status == "imported"
+    r = conn.execute("SELECT * FROM registration_record WHERE source_file='master' AND n_number_raw = ?",
+                     (n,)).fetchone()
+    assert (r["certification"], r["fractional_owner"], r["airworthiness_date"]) == ("1NU", "Y", "2001-02-03")
+    assert json.loads(r["other_names"]) == ["CO OWNER ONE", "CO OWNER THREE"]      # blanks skipped, order kept
+    assert (r["kit_manufacturer"], r["kit_model"], r["region"], r["county"]) == (
+        "VANS AIRCRAFT INC", "RV-6", "C", "097")
+    blank = conn.execute("SELECT other_names, fractional_owner, kit_model FROM registration_record "
+                         "WHERE source_file='master' AND n_number_raw != ? LIMIT 1", (n,)).fetchone()
+    assert tuple(blank) == (None, None, None)                                      # empty FAA fields become NULL
+
+
+def test_change_in_only_a_new_column_creates_a_new_version(conn, store_id, tmp_path):
+    a = Archive()
+    run(conn, store_id, tmp_path, a, "2026-11-11")
+    b = a.copy()
+    row = b.rows(MASTER)[0]
+    b.set(MASTER, row, "OTHER NAMES(1)", "NEW CO OWNER")
+    assert run(conn, store_id, tmp_path, b, "2026-11-12").status == "imported"
+    n = b.get(MASTER, row, "N-NUMBER").strip()
+    assert one(conn, "SELECT count(*) FROM registration_record WHERE source_file='master' AND n_number_raw = ?",
+               n) == 2
+    assert one(conn, "SELECT other_names FROM registration_record WHERE source_file='master' AND "
+                     "n_number_raw = ? AND last_seen_snapshot_id IS NULL", n) == '["NEW CO OWNER"]'
+
+
+def test_missing_optional_columns_import_as_unknown(conn, store_id, tmp_path):
+    a = Archive()
+    for col in ("CERTIFICATION", "AIR WORTH DATE", "OTHER NAMES(1)", "KIT MFR", "REGION"):
+        a.drop_column(MASTER, col)
+    assert run(conn, store_id, tmp_path, a, "2026-11-11").status == "imported"     # optional: not a format break
+    assert one(conn, "SELECT count(*) FROM registration_record WHERE source_file='master' AND "
+                     "certification IS NOT NULL") == 0
+
+
+def _db_at_version(path, version: int):
+    c = db.connect_writer(path)
+    db.migrate(c, [m for m in db.load_migrations("registry") if m.version <= version])
+    return c
+
+
+def test_migration_flags_a_populated_database_for_rebuild(tmp_path):
+    c = _db_at_version(tmp_path / "old.db", 2)
+    c.execute("PRAGMA foreign_keys = OFF")
+    c.execute("INSERT INTO registration_record (source_file, aircraft_id, row_hash, first_seen_snapshot_id) "
+              "VALUES ('master', 1, 'h', 1)")
+    assert importer.needs_rebuild(c) is None
+    db.migrate(c, db.load_migrations("registry"))
+    assert "rebuild" in (importer.needs_rebuild(c) or "")
+    with pytest.raises(importer.ImportError_, match="must be rebuilt"):
+        importer.check_schema(c)
+
+
+def test_migration_does_not_flag_an_empty_database(tmp_path):
+    c = _db_at_version(tmp_path / "empty.db", 2)
+    db.migrate(c, db.load_migrations("registry"))
+    assert importer.needs_rebuild(c) is None
+    importer.check_schema(c)                                                      # fine, nothing to rebuild
+    fresh = db.connect_writer(tmp_path / "fresh.db")
+    db.migrate(fresh, db.load_migrations("registry"))
+    assert importer.needs_rebuild(fresh) is None

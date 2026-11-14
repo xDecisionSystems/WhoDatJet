@@ -19,7 +19,8 @@ from whodatjet.archive_store import ArchiveStore, open_store
 from whodatjet.collect import RunResult, collect, ingest_lock
 from whodatjet.config import Config
 from whodatjet.faa_client import CHICAGO
-from whodatjet.importer import ImportResult, check_schema, import_pending
+from whodatjet.importer import ImportResult, check_schema, import_pending, needs_rebuild
+from whodatjet.rebuild import rebuild
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class IngestResult:
     collect: RunResult
     imports: list[ImportResult] = field(default_factory=list)
     error: str | None = None
+    rebuilt_archives: int = 0  # >0 when this run first rebuilt the registry (after a schema change)
 
     @property
     def ok(self) -> bool:
@@ -43,7 +45,7 @@ class IngestResult:
                          **{k: r.stats[k] for k in ("master_inserted", "master_closed", "observed_opened",
                                                     "observed_closed", "dereg_intervals") if k in r.stats}}
                         for r in self.imports],
-            "error": self.error,
+            "error": self.error, "rebuilt_archives": self.rebuilt_archives,
         }
 
 
@@ -73,6 +75,15 @@ def ingest(cfg: Config, store: ArchiveStore | None = None, *, backoff_s: float =
             result.error = f"cannot open registry database: {exc}"
             return result
         try:
+            reason = needs_rebuild(conn)
+            if reason:
+                # A schema change (new FAA columns) means every stored record must be re-read from the archives.
+                conn.close()
+                log.warning("rebuilding the registry from the archives first: %s", reason)
+                result.rebuilt_archives = len(rebuild(cfg.registry_db_path, store, cfg.staging_dir,
+                                                      cfg.data_dir / "backups"))
+                conn = db.connect_writer(cfg.registry_db_path, mmap_size=cfg.sqlite_mmap_size,
+                                         cache_size_kib=cfg.sqlite_cache_size_kib)
             check_schema(conn)
             if collected.status in ("failed", "duplicate"):
                 _record_run(conn, collected)

@@ -32,6 +32,12 @@ ENGINE_TYPE = {"0": "None", "1": "Reciprocating", "2": "Turbo-prop", "3": "Turbo
 CATEGORY = {"1": "Land", "2": "Sea", "3": "Amphibian"}
 REGISTRANT_TYPE = {"1": "Individual", "2": "Partnership", "3": "Corporation", "4": "Co-owned", "5": "Government",
                    "7": "LLC", "8": "Non-citizen corporation", "9": "Non-citizen co-owned"}
+CERT_CLASS = {"1": "Standard", "2": "Limited", "3": "Restricted", "4": "Experimental", "5": "Provisional",
+              "6": "Multiple", "7": "Primary", "8": "Special flight permit", "9": "Light sport"}
+STANDARD_CATEGORY = {"N": "Normal", "U": "Utility", "A": "Acrobatic", "T": "Transport", "G": "Glider",
+                     "B": "Balloon", "C": "Commuter", "O": "Other"}
+REGION = {"1": "Eastern", "2": "Southwestern", "3": "Central", "4": "Western-Pacific", "5": "Alaskan",
+          "7": "Southern", "8": "European", "C": "Great Lakes", "E": "New England", "S": "Northwest Mountain"}
 STATUS = {"V": "Valid", "E": "Expired", "R": "Registration pending", "D": "Expired (dealer)"}
 NOT_FOUND_TEXT = {
     "no_records": "The registry has no record of this N-number.",
@@ -46,6 +52,18 @@ def _clean(value) -> str | None:
     return text or None
 
 
+def certification(code: str | None) -> str | None:
+    """`1N` -> "Standard, Normal (1N)"; unknown parts are kept as the raw code."""
+    code = _clean(code)
+    if not code:
+        return None
+    cls = CERT_CLASS.get(code[0])
+    if cls is None:
+        return code
+    cats = [STANDARD_CATEGORY[c] for c in code[1:] if code[0] == "1" and c in STANDARD_CATEGORY]
+    return f"{', '.join([cls, *cats])} ({code})"
+
+
 def owner(record: dict) -> dict | None:
     name = _clean(record.get("registrant_name"))
     city, state, zip_code = (_clean(record.get(k)) for k in ("city", "state", "zip_code"))
@@ -54,9 +72,10 @@ def owner(record: dict) -> dict | None:
     lines = [x for x in (_clean(record.get("street")), _clean(record.get("street2")), locality or None,
                          country if country and country.upper() not in ("US", "USA") else None) if x]
     kind = REGISTRANT_TYPE.get(str(record.get("registrant_type")), _clean(record.get("registrant_type")))
-    if not (name or lines or kind):
+    if not (name or lines or kind or record.get("other_names")):
         return None
-    return {"name": name, "address": lines, "type": kind}
+    others = [n for n in (record.get("other_names") or []) if _clean(n)]
+    return {"name": name, "address": lines, "type": kind, "also_registered": others}
 
 
 def describe(record: dict) -> dict:
@@ -68,12 +87,20 @@ def describe(record: dict) -> dict:
     count = record.get("engine_count")
     status = _clean(record.get("status_code"))
     facts = [
-        ("Manufacturer", make), ("Model", model), ("Year built", _clean(record.get("year_mfr"))),
+        ("Manufacturer", make), ("Model", model), ("Manufacturer-model code", _clean(record.get("mfr_mdl_code"))),
+        ("Year built", _clean(record.get("year_mfr"))),
         ("Type", ", ".join(x for x in (kind, cat) if x) or None),
         ("Engine", " · ".join(x for x in (engine, f"{count} engine{'s' if count != 1 else ''}"
                                           if count is not None else None) if x) or None),
         ("Seats", _clean(record.get("seats"))), ("Serial number", _clean(record.get("serial_number"))),
         ("Registration", STATUS.get(status or "", f"status {status}" if status else None)),
+        ("Certification", certification(record.get("certification"))),
+        ("Airworthiness date", _clean(record.get("airworthiness_date"))),
+        ("Fractional ownership", "Yes" if _clean(record.get("fractional_owner")) else None),
+        ("Kit", " ".join(x for x in (_clean(record.get("kit_manufacturer")), _clean(record.get("kit_model"))) if x)
+         or None),
+        ("FAA region", REGION.get(_clean(record.get("region")) or "", _clean(record.get("region")))),
+        ("County code", _clean(record.get("county"))),
         ("Certificate issued", _clean(record.get("certificate_issue_date"))),
         ("Registration expires", _clean(record.get("expiration_date"))),
         ("Mode S (hex)", _clean(record.get("mode_s_code_hex"))),

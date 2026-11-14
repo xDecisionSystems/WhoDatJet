@@ -193,3 +193,46 @@ def test_backup_source_path_with_uri_characters(tmp_path):
     backup._backup_one(src, dest)
     with sqlite3.connect(dest) as conn:
         assert conn.execute("SELECT value FROM example").fetchone()[0] == "retained"
+
+
+def test_ingest_rebuilds_by_itself_after_a_schema_change(fcfg, fstore, monkeypatch):
+    """After migration 0003 a populated database is flagged; the next ingest rebuilds from the archives first."""
+    a = Archive()
+    row = a.rows(MASTER)[0]
+    a.set(MASTER, row, "OTHER NAMES(1)", "CO OWNER ONE")
+    n = a.get(MASTER, row, "N-NUMBER").strip()
+    serve(monkeypatch, a, LM1)
+    assert ingest.ingest(fcfg, fstore).ok
+    conn = db.connect_writer(fcfg.registry_db_path)
+    conn.execute("INSERT INTO meta (key, value) VALUES ('needs_rebuild', 'test: new columns')")
+    conn.execute("UPDATE registration_record SET other_names = NULL")       # as after migrating old data
+    conn.close()
+    serve(monkeypatch, a, LM2)                                               # same content again: a duplicate
+    r = ingest.ingest(fcfg, fstore)
+    assert r.ok and r.rebuilt_archives == 1 and r.summary()["rebuilt_archives"] == 1
+    c = db.connect_reader(fcfg.registry_db_path)
+    assert c.execute("SELECT value FROM meta WHERE key = 'needs_rebuild'").fetchone() is None
+    assert c.execute("SELECT other_names FROM registration_record WHERE source_file='master' AND n_number_raw = ?",
+                     (n,)).fetchone()[0] == '["CO OWNER ONE"]'                # re-read from the archive
+    r2 = ingest.ingest(fcfg, fstore)
+    assert r2.ok and r2.rebuilt_archives == 0                                # only once
+
+
+def test_rebuild_if_needed_cli(fcfg, fstore, monkeypatch, capsys):
+    from whodatjet import cli
+    serve(monkeypatch, Archive(), LM1)
+    assert ingest.ingest(fcfg, fstore).ok
+    monkeypatch.setenv("WHODATJET_DATA_DIR", str(fcfg.data_dir))
+    monkeypatch.setenv("WHODATJET_ARCHIVE_BACKEND", "filesystem")
+    monkeypatch.setenv("WHODATJET_ARCHIVE_DIR", str(fcfg.archive_dir))
+    for k in ("WHODATJET_S3_BUCKET", "WHODATJET_S3_ACCESS_KEY_ID", "WHODATJET_S3_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    assert cli.main(["rebuild", "--if-needed"]) == 0
+    assert "no rebuild needed" in capsys.readouterr().out
+    conn = db.connect_writer(fcfg.registry_db_path)
+    conn.execute("INSERT INTO meta (key, value) VALUES ('needs_rebuild', 'test')")
+    conn.close()
+    assert cli.main(["rebuild", "--if-needed"]) == 0
+    assert "rebuilding: test" in capsys.readouterr().out
+    c = db.connect_reader(fcfg.registry_db_path)
+    assert c.execute("SELECT count(*) FROM meta WHERE key = 'needs_rebuild'").fetchone()[0] == 0

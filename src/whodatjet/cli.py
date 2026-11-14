@@ -7,6 +7,7 @@ import getpass
 import json
 import logging
 import os
+import sqlite3
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -42,7 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     arch = sub.add_parser("archives", help="inspect the archive store")
     arch.add_argument("action", choices=["list"])
     sub.add_parser("import", help="import archives from the store that are not yet in the registry database")
-    sub.add_parser("rebuild", help="rebuild the registry database by replaying every archive in order")
+    rb = sub.add_parser("rebuild", help="rebuild the registry database by replaying every archive in order")
+    rb.add_argument("--if-needed", action="store_true",
+                    help="only when a schema change requires it (used by the updater)")
     sub.add_parser("coverage", help="show verified coverage, gaps and staleness")
     sub.add_parser("serve", help="run the HTTP API (host, port, workers from the environment)")
     keys_p = sub.add_parser("keys", help="manage API keys")
@@ -168,6 +171,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if all(r.status in ("imported", "duplicate") for r in results) else 1
 
     if args.command == "rebuild":
+        if args.if_needed:
+            from whodatjet.importer import needs_rebuild
+
+            try:
+                conn = db.connect_reader(cfg.registry_db_path)
+                try:
+                    reason = needs_rebuild(conn)
+                finally:
+                    conn.close()
+            except (FileNotFoundError, sqlite3.Error):
+                reason = None
+            if not reason:
+                print("no rebuild needed")
+                return 0
+            print(f"rebuilding: {reason}")
         try:
             with ingest_lock(cfg.lock_path):
                 results = rebuild_mod.rebuild(cfg.registry_db_path, open_store(cfg), cfg.staging_dir,
