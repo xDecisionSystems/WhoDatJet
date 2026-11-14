@@ -116,7 +116,7 @@ done
 ask() {
   local var="$1" prompt="$2" def="${3:-}" secret="${4:-}" val=""
   if [ -n "${!var:-}" ]; then return; fi
-  if [ "$YES" = 0 ] && [ -r /dev/tty ]; then
+  if [ "$YES" = 0 ] && { : </dev/tty; } 2>/dev/null; then
     if [ -n "$secret" ]; then read -r -s -p "$prompt: " val </dev/tty; echo >/dev/tty
     else read -r -p "$prompt${def:+ [$def]}: " val </dev/tty; fi
   fi

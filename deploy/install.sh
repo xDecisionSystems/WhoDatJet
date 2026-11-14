@@ -21,6 +21,7 @@ set -euo pipefail
 if [ -n "${WHODATJET_ANSWERS_FILE:-}" ] && [ -r "$WHODATJET_ANSWERS_FILE" ]; then
   set -a; . "$WHODATJET_ANSWERS_FILE"; set +a
   rm -f "$WHODATJET_ANSWERS_FILE"
+  WHODATJET_NONINTERACTIVE=1
 fi
 
 REPO_URL="${WHODATJET_REPO_URL:-https://github.com/xDecisionSystems/WhoDatJet.git}"
@@ -48,7 +49,7 @@ esac
 ask() {
   local var="$1" prompt="$2" def="${3:-}" secret="${4:-}" val=""
   if [ -n "${!var:-}" ]; then return; fi
-  if [ -r /dev/tty ]; then
+  if [ -z "${WHODATJET_NONINTERACTIVE:-}" ] && { : </dev/tty; } 2>/dev/null; then
     if [ -n "$secret" ]; then read -r -s -p "$prompt: " val </dev/tty; echo >/dev/tty
     else read -r -p "$prompt${def:+ [$def]}: " val </dev/tty; fi
   fi
