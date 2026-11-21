@@ -21,7 +21,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from whodatjet import __version__, coverage, db, query, web
+from whodatjet import __version__, coverage, db, pipeline, query, web
 from whodatjet import status as status_mod
 from whodatjet.auth import KeyCache, RateLimiter, UsageRecorder
 from whodatjet.config import Config, load_config, load_env_file
@@ -166,6 +166,16 @@ def create_app(cfg: Config, *, today: Callable[[], date] | None = None, worker_i
         if problems:
             body["status"] = "degraded" if body.get("database") == "ok" else "down"
         return JSONResponse(body, status_code=503 if strict and problems else 200)
+
+    @app.get("/healthz/pipeline")
+    def healthz_pipeline(strict: bool = False):
+        """Download / S3 / processing report of the daily FAA pipeline (no registry data; no key needed)."""
+        try:
+            conn: sqlite3.Connection | None = registry()
+        except (HTTPException, sqlite3.Error):
+            conn = None
+        body = pipeline.pipeline_status(cfg, conn, today=today_fn())
+        return JSONResponse(body, status_code=503 if strict and body["status"] != "ok" else 200)
 
     @app.get("/v1/tail-numbers/{n_number}")
     def tail_number(n_number: str, date: str | None = None, fields: str | None = None):  # noqa: A002
