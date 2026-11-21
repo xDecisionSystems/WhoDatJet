@@ -1,3 +1,4 @@
+# ruff: noqa: F401, F811  (pytest fixtures imported from test_api)
 from __future__ import annotations
 
 import json
@@ -6,7 +7,7 @@ from datetime import date, datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.test_api import TODAY, env, world  # noqa: F401  (fixtures)
+from tests.test_api import TODAY, env, world  # fixtures
 from whodatjet import db, pipeline
 from whodatjet.api import create_app
 from whodatjet.faa_client import CHICAGO
