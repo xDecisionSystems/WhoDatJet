@@ -1,6 +1,6 @@
 [project]
 name = "whodatjet"
-version = "0.1.4"
+version = "0.1.5"
 description = "FAA aircraft registry history service"
 requires-python = ">=3.12,<3.13"
 dependencies = [
