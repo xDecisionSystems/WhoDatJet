@@ -162,6 +162,18 @@ def register(app: FastAPI, cfg: Config, registry: Callable[[], sqlite3.Connectio
             raise HTTPException(400, f"invalid date {as_of!r}; expected YYYY-MM-DD") from exc
         return _no_store(card(n, d))
 
+    @app.get("/ui/mode-s", include_in_schema=False)
+    def mode_s(hex: str = Query(..., description="comma-separated 24-bit Mode S addresses")):
+        """Current registrations by Mode S address, for maps that see an aircraft's transponder but not its
+        N-number (SWIMMERS terminal and surface radar). Public like /ui/search: no owner data."""
+        try:
+            found = query.by_mode_s(registry(), hex.split(","))
+        except query.QueryError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        aircraft = {h: {**r, "aircraft_type_text": AIRCRAFT_TYPE.get(r["aircraft_type"] or ""),
+                        "engine_type_text": ENGINE_TYPE.get(r["engine_type"] or "")} for h, r in found.items()}
+        return _no_store({"aircraft": aircraft})
+
     @app.get("/ui/random", include_in_schema=False)
     def random_aircraft():
         conn = registry()

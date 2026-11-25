@@ -334,3 +334,35 @@ def snapshots(conn: sqlite3.Connection, *, gap_threshold: int = 2, limit: int = 
         "gaps": [{"after": g.after.isoformat(), "before": g.before.isoformat(),
                   "missed_publication_days": g.missed_publication_days} for g in gaps],
     }
+
+
+MODE_S_MAX = 200
+
+
+@consistent_read
+def by_mode_s(conn: sqlite3.Connection, hexes: list[str]) -> dict[str, dict]:
+    """Current registrations (latest snapshot) for Mode S addresses (24-bit, hex; the FAA file writes them in
+    upper case), with the aircraft model's FAA type, engine and weight class. Addresses not in the registry
+    are left out. Several current rows for one address (rare, e.g. a re-registration) resolve to the newest."""
+    want = sorted({h.strip().upper() for h in hexes if h.strip()})
+    if not want:
+        return {}
+    if len(want) > MODE_S_MAX:
+        raise QueryError(f"at most {MODE_S_MAX} Mode S addresses per request")
+    bad = [h for h in want if len(h) != 6 or any(c not in "0123456789ABCDEF" for c in h)]
+    if bad:
+        raise QueryError(f"invalid Mode S address(es): {', '.join(bad[:5])}; expected 6 hex digits")
+    marks = ",".join("?" * len(want))
+    rows = conn.execute(
+        "SELECT r.id, r.mode_s_code_hex AS hex, t.n_number, r.year_mfr, m.manufacturer_name, m.model_name, "
+        "m.aircraft_type, m.engine_type, m.aircraft_category, m.engine_count, m.seats, m.weight_class "
+        "FROM registration_record r JOIN tail_number t ON t.id = r.tail_number_id "
+        "LEFT JOIN aircraft_model m ON m.mfr_mdl_code = r.mfr_mdl_code AND m.last_seen_snapshot_id IS NULL "
+        f"WHERE r.source_file = 'master' AND r.mode_s_code_hex IS NOT NULL AND r.mode_s_code_hex IN ({marks}) "
+        "AND r.last_seen_snapshot_id IS NULL ORDER BY r.id", want).fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:  # ordered by id: the newest row for an address wins
+        out[r["hex"]] = {k: r[k] for k in ("n_number", "year_mfr", "manufacturer_name", "model_name", "aircraft_type",
+                                             "engine_type", "aircraft_category", "engine_count", "seats",
+                                             "weight_class")}
+    return out

@@ -122,3 +122,24 @@ def test_card_has_no_registered_since_field():
     labels = [f["label"] for f in card["facts"]]
     assert "Registered since" not in labels and "2026-11-11" not in [f["value"] for f in card["facts"]]
     assert "Certificate issued" in labels                       # the real registration date stays
+
+
+def test_mode_s_lookup_returns_current_registrations(client):
+    r = client.get("/ui/mode-s", params={"hex": "a004b3,A00713, FFFFFF"})          # case and spaces forgiving
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    found = r.json()["aircraft"]
+    assert "FFFFFF" not in found                                                       # unknown addresses left out
+    assert found, "fixture addresses should resolve"
+    for hx, a in found.items():
+        assert len(hx) == 6 and a["n_number"].startswith("N")
+        assert set(a) >= {"aircraft_type", "aircraft_type_text", "engine_type", "engine_count", "weight_class",
+                          "manufacturer_name", "model_name"}
+        assert "registrant_name" not in a                                              # no owner data on this route
+    if "A00713" in found:                                                              # N1000G is a balloon
+        assert found["A00713"]["aircraft_type_text"] == "Balloon"
+
+
+def test_mode_s_lookup_validation(client):
+    assert client.get("/ui/mode-s", params={"hex": "XYZ123"}).status_code == 400
+    assert client.get("/ui/mode-s", params={"hex": ",".join(f"{i:06X}" for i in range(201))}).status_code == 400
+    assert client.get("/ui/mode-s", params={"hex": ""}).json() == {"aircraft": {}}
