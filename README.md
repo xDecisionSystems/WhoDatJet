@@ -43,6 +43,7 @@ The one-liner trusts GitHub's TLS and the pinned URL. The Sigstore signature pro
 | | |
 |---|---|
 | API | port 8000: `GET /v1/tail-numbers/{n}?date=`, `/history`, `/v1/aircraft/{id}`, `/v1/snapshots`, `/v1/status`, `/healthz`, interactive docs at `/docs` |
+| Public lookups (no key, no owner data) | `GET /ui/search?q=<N-number>&date=` (one aircraft card) and `GET /ui/mode-s?hex=<addr>,<addr>...` (current registrations by 24-bit Mode S address, up to 200: N-number, manufacturer and model, FAA aircraft type, engine type and count, seats, weight class; since v0.1.6, used by SWIMMERS for aircraft icons) |
 | Admin console | port 8001, served under `/admin`: API keys, notifications (Slack), monitoring helper, admins, audit log. First sign-in `admin` / `admin`, with a forced password change |
 | Timers | ingest (00:15 and 06:15 Central), backup (08:00), watchdog (every 10 minutes) |
 | Archives | S3-compatible bucket (`<year>/<source_date>_<sha256>.zip`, never overwritten) or local disk |
